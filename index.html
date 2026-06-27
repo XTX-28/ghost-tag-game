@@ -128,7 +128,7 @@ input[type=text]:focus{border-color:#4d96ff}
   <button class="btn btn-secondary" onclick="backToLobby()" style="width:min(280px,70vw)">返回大厅</button>
 </div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 // ============ CONFIG ============
 const ARENA_W = 800, ARENA_H = 600;
@@ -138,6 +138,24 @@ const GHOST_SPEED = 3.1;
 const TAG_DIST = PLAYER_R * 2.2;
 const ROUND_TIME = 90;
 const TICK_RATE = 50; // ms per tick
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      {urls: 'stun:stun.l.google.com:19302'},
+      {urls: 'stun:stun1.l.google.com:19302'},
+      {urls: 'stun:stun2.l.google.com:19302'},
+      {urls: 'stun:stun.cloudflare.com:3478'}
+    ]
+  }
+};
+const CONNECT_TIMEOUT = 15000; // 15s timeout
+
+// Show connection status in the waiting area
+function showConnStatus(msg, isError) {
+  const el = document.getElementById('waiting-status');
+  el.textContent = msg;
+  el.style.color = isError ? '#ff6b6b' : 'rgba(255,255,255,.5)';
+}
 
 const COLORS = ['#4d96ff','#6bcb77','#ffd93d','#ff6b6b','#a66cff','#ff9f43','#00d2d3','#ee5a24','#c44dff','#2ecc71'];
 const NAMES_DEFAULT = ['小明','小红','小蓝','小绿','小黄','小紫','小橙','小粉','小灰','小白'];
@@ -222,16 +240,30 @@ function createRoom() {
   isHost = true;
   myColor = 0;
 
+  // Show waiting screen immediately with status
+  document.getElementById('display-room-code').textContent = '...';
+  showWaiting();
+  showConnStatus('正在连接服务器...', false);
+
   const peerId = 'ghosttag-' + roomCode;
-  peer = new Peer(peerId);
+  peer = new Peer(peerId, PEER_CONFIG);
+
+  // Timeout for initial connection
+  const connTimeout = setTimeout(() => {
+    if (!myId) {
+      showConnStatus('连接超时，请检查网络后重试', true);
+      if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
+      setTimeout(() => { showScreen('lobby'); showMain(); }, 2500);
+    }
+  }, CONNECT_TIMEOUT);
 
   peer.on('open', id => {
+    clearTimeout(connTimeout);
     myId = id;
     players[myId] = {id:myId, name:myName, color:myColor, x:ARENA_W/2, y:ARENA_H/2, isGhost:false, dir:{x:0,y:0}, score:0, alive:true};
     document.getElementById('display-room-code').textContent = roomCode;
-    document.getElementById('waiting-status').textContent = '等待玩家加入...';
+    showConnStatus('房间已创建，等待玩家加入...', false);
     document.getElementById('btn-start').style.display = '';
-    showWaiting();
     updatePlayersList();
   });
 
@@ -252,12 +284,20 @@ function createRoom() {
   });
 
   peer.on('error', err => {
+    clearTimeout(connTimeout);
     if (err.type === 'unavailable-id') {
       roomCode = genRoomCode();
       peer.destroy();
       createRoom(); // retry with new code
+    } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') {
+      showConnStatus('网络连接失败，请检查网络设置', true);
+      setTimeout(() => { showScreen('lobby'); showMain(); }, 2500);
+    } else if (err.type === 'peer-unavailable') {
+      showConnStatus('房间不存在或已关闭', true);
+      setTimeout(() => { showScreen('lobby'); showMain(); }, 2500);
     } else {
-      alert('连接失败: ' + err.type);
+      showConnStatus('连接错误: ' + err.type, true);
+      setTimeout(() => { showScreen('lobby'); showMain(); }, 3000);
     }
   });
 }
@@ -269,34 +309,80 @@ function joinRoom() {
   if (!roomCode || roomCode.length < 3) { alert('请输入房间号'); return; }
   isHost = false;
 
-  const peerId = 'ghosttag-join-' + Date.now();
-  peer = new Peer(peerId);
+  // Show waiting screen with status
+  document.getElementById('display-room-code').textContent = roomCode;
+  document.getElementById('btn-start').style.display = 'none';
+  showWaiting();
+  showConnStatus('正在连接服务器...', false);
 
-  peer.on('open', id => {
-    myId = id;
+  const peerId = 'ghosttag-join-' + Date.now();
+  peer = new Peer(peerId, PEER_CONFIG);
+
+  let attemptCount = 0;
+  const MAX_ATTEMPTS = 2;
+
+  function tryConnect() {
+    attemptCount++;
+    showConnStatus(`正在连接房间${roomCode}... (${attemptCount}/${MAX_ATTEMPTS + 1})`, false);
+
     const hostId = 'ghosttag-' + roomCode;
-    const conn = peer.connect(hostId, {metadata:{name:myName}});
-    connections.push(conn);
+    const conn = peer.connect(hostId, {metadata:{name:myName}, reliable:true});
+    connections = [conn];
+
+    // Timeout for this connection attempt
+    const attemptTimeout = setTimeout(() => {
+      if (!conn.open) {
+        try { conn.close(); } catch(e){}
+        if (attemptCount <= MAX_ATTEMPTS) {
+          tryConnect(); // retry
+        } else {
+          showConnStatus('连接超时，请确认房间号正确且网络正常', true);
+          setTimeout(() => { showScreen('lobby'); showMain(); }, 2500);
+        }
+      }
+    }, CONNECT_TIMEOUT);
 
     conn.on('open', () => {
+      clearTimeout(attemptTimeout);
       conn.send({type:'join', name:myName});
-      document.getElementById('display-room-code').textContent = roomCode;
-      document.getElementById('waiting-status').textContent = '已连接，等待房主开始...';
-      document.getElementById('btn-start').style.display = 'none';
-      showWaiting();
+      showConnStatus('已连接，等待房主开始...', false);
     });
 
     conn.on('data', data => handleClientMessage(data));
 
     conn.on('close', () => {
-      alert('与房间断开连接');
-      showScreen('lobby');
-      showMain();
+      showConnStatus('与房间断开连接', true);
+      setTimeout(() => {
+        showScreen('lobby');
+        showMain();
+      }, 2000);
     });
+
+    conn.on('error', err => {
+      clearTimeout(attemptTimeout);
+      if (attemptCount <= MAX_ATTEMPTS) {
+        tryConnect(); // retry
+      } else {
+        showConnStatus('连接失败，请重试', true);
+        setTimeout(() => { showScreen('lobby'); showMain(); }, 2500);
+      }
+    });
+  }
+
+  peer.on('open', id => {
+    myId = id;
+    tryConnect();
   });
 
   peer.on('error', err => {
-    alert('连接失败: ' + err.type);
+    if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') {
+      showConnStatus('无法连接信令服务器，请检查网络', true);
+    } else if (err.type === 'peer-unavailable') {
+      showConnStatus('房间不存在或房主已离开', true);
+    } else {
+      showConnStatus('连接错误: ' + err.type, true);
+    }
+    setTimeout(() => { showScreen('lobby'); showMain(); }, 2500);
   });
 }
 
