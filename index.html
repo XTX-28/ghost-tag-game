@@ -97,8 +97,27 @@ input[type=text]:focus{border-color:#4d96ff}
     <div class="room-code" id="display-room-code">----</div>
     <div class="status-text" id="waiting-status">等待玩家加入...</div>
     <div class="players-list" id="players-list"></div>
+    <button class="btn btn-secondary" onclick="showInviteCard()">📤 邀请好友</button>
     <button class="btn btn-gold" id="btn-start" style="display:none" onclick="startGame()">开始游戏</button>
     <button class="btn btn-secondary" onclick="leaveRoom()">离开房间</button>
+  </div>
+  <div class="card" id="card-invite" style="display:none">
+    <h3>邀请好友加入</h3>
+    <div class="status-text" style="margin-bottom:12px">把链接发给朋友，点击即可加入</div>
+    <div id="invite-link-display" style="word-break:break-all;padding:10px 12px;background:rgba(255,255,255,.06);border-radius:10px;font-size:12px;color:#4d96ff;margin-bottom:14px;line-height:1.6;text-align:center;font-family:monospace"></div>
+    <button class="btn btn-gold" onclick="copyInviteLink()">📋 复制链接</button>
+    <button class="btn btn-primary" id="btn-native-share" onclick="nativeShare()" style="display:none">📤 分享给好友</button>
+    <button class="btn btn-secondary" onclick="hideInviteCard()">返回</button>
+  </div>
+  <div class="card" id="card-autojoin" style="display:none">
+    <h3>有人邀请你玩鬼抓人!</h3>
+    <div class="room-code" id="autojoin-room">----</div>
+    <div class="input-row">
+      <input type="text" id="autojoin-name" placeholder="输入昵称" maxlength="8">
+    </div>
+    <div class="status-text" id="autojoin-status" style="margin-bottom:10px"></div>
+    <button class="btn btn-primary" id="btn-autojoin-go" onclick="doAutoJoin()">加入房间</button>
+    <button class="btn btn-secondary" onclick="cancelAutoJoin()">取消</button>
   </div>
 </div>
 
@@ -209,19 +228,31 @@ function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
+let shareUrl = '';
+
+function hideAllCards() {
+  ['card-main','card-join','card-waiting','card-invite','card-autojoin'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+}
 function showMain() {
+  hideAllCards();
   document.getElementById('card-main').style.display = '';
-  document.getElementById('card-join').style.display = 'none';
-  document.getElementById('card-waiting').style.display = 'none';
 }
 function showJoin() {
-  document.getElementById('card-main').style.display = 'none';
+  hideAllCards();
   document.getElementById('card-join').style.display = '';
-  document.getElementById('card-waiting').style.display = 'none';
 }
 function showWaiting() {
-  document.getElementById('card-main').style.display = 'none';
-  document.getElementById('card-join').style.display = 'none';
+  hideAllCards();
+  document.getElementById('card-waiting').style.display = '';
+}
+function showInviteCard() {
+  hideAllCards();
+  document.getElementById('card-invite').style.display = '';
+}
+function hideInviteCard() {
+  hideAllCards();
   document.getElementById('card-waiting').style.display = '';
 }
 
@@ -262,9 +293,15 @@ function createRoom() {
     myId = id;
     players[myId] = {id:myId, name:myName, color:myColor, x:ARENA_W/2, y:ARENA_H/2, isGhost:false, dir:{x:0,y:0}, score:0, alive:true};
     document.getElementById('display-room-code').textContent = roomCode;
-    showConnStatus('房间已创建，等待玩家加入...', false);
     document.getElementById('btn-start').style.display = '';
     updatePlayersList();
+
+    // Generate invite link and show invite card
+    shareUrl = location.origin + location.pathname + '?room=' + roomCode;
+    document.getElementById('invite-link-display').textContent = shareUrl;
+    // Show native share button if available (mobile)
+    document.getElementById('btn-native-share').style.display = navigator.share ? '' : 'none';
+    showInviteCard();
   });
 
   peer.on('connection', conn => {
@@ -406,7 +443,150 @@ function leaveRoom() {
   connections = [];
   players = {};
   gameRunning = false;
+  // Clean URL params
+  if (window.history && window.history.replaceState) {
+    history.replaceState(null, '', location.pathname);
+  }
   showScreen('lobby');
+  showMain();
+}
+
+// ============ INVITE LINK ============
+function copyInviteLink() {
+  if (!shareUrl) return;
+  const btn = event.target;
+  const orig = btn.textContent;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      btn.textContent = '✅ 已复制!';
+      setTimeout(() => btn.textContent = orig, 2000);
+    }).catch(() => fallbackCopy(shareUrl, btn, orig));
+  } else {
+    fallbackCopy(shareUrl, btn, orig);
+  }
+}
+function fallbackCopy(text, btn, orig) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    btn.textContent = '✅ 已复制!';
+  } catch(e) {
+    btn.textContent = '复制失败，请手动复制上方链接';
+  }
+  document.body.removeChild(ta);
+  setTimeout(() => btn.textContent = orig, 2500);
+}
+
+function nativeShare() {
+  if (!navigator.share || !shareUrl) return;
+  navigator.share({
+    title: '鬼抓人大作战',
+    text: '快来一起玩鬼抓人大作战! 点击链接加入我的房间 👻',
+    url: shareUrl
+  }).catch(() => {});
+}
+
+// ============ AUTO JOIN (from invite link) ============
+function checkUrlParams() {
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room');
+  if (!room) return false;
+
+  const code = room.toUpperCase();
+  document.getElementById('autojoin-room').textContent = code;
+  document.getElementById('autojoin-name').value =
+    NAMES_DEFAULT[Math.floor(Math.random() * NAMES_DEFAULT.length)];
+  document.getElementById('autojoin-status').textContent = '输入昵称后点击加入';
+  document.getElementById('btn-autojoin-go').style.display = '';
+
+  hideAllCards();
+  document.getElementById('card-autojoin').style.display = '';
+  return true;
+}
+
+function doAutoJoin() {
+  const code = document.getElementById('autojoin-room').textContent;
+  const name = document.getElementById('autojoin-name').value.trim() ||
+    NAMES_DEFAULT[Math.floor(Math.random() * NAMES_DEFAULT.length)];
+
+  document.getElementById('player-name').value = name;
+  document.getElementById('room-code-input').value = code;
+  document.getElementById('btn-autojoin-go').style.display = 'none';
+  document.getElementById('autojoin-status').textContent = '正在连接...';
+
+  isHost = false;
+  myName = name;
+  roomCode = code;
+
+  const peerId = 'ghosttag-join-' + Date.now();
+  peer = new Peer(peerId, PEER_CONFIG);
+
+  const timeout = setTimeout(() => {
+    document.getElementById('autojoin-status').textContent = '连接超时，请确认房主在线';
+    document.getElementById('autojoin-status').style.color = '#ff6b6b';
+    document.getElementById('btn-autojoin-go').style.display = '';
+    document.getElementById('btn-autojoin-go').textContent = '重试';
+  }, CONNECT_TIMEOUT);
+
+  peer.on('open', id => {
+    myId = id;
+    const hostId = 'ghosttag-' + code;
+    const conn = peer.connect(hostId, {metadata:{name:myName}, reliable:true});
+    connections = [conn];
+
+    const connTimeout = setTimeout(() => {
+      if (!conn.open) {
+        try { conn.close(); } catch(e){}
+        clearTimeout(timeout);
+        document.getElementById('autojoin-status').textContent = '连接超时，房间可能已关闭';
+        document.getElementById('autojoin-status').style.color = '#ff6b6b';
+        document.getElementById('btn-autojoin-go').style.display = '';
+        document.getElementById('btn-autojoin-go').textContent = '重试';
+      }
+    }, CONNECT_TIMEOUT);
+
+    conn.on('open', () => {
+      clearTimeout(connTimeout);
+      clearTimeout(timeout);
+      conn.send({type:'join', name:myName});
+      document.getElementById('display-room-code').textContent = code;
+      document.getElementById('btn-start').style.display = 'none';
+      showScreen('lobby');
+      showWaiting();
+      showConnStatus('已连接，等待房主开始...', false);
+    });
+
+    conn.on('data', data => handleClientMessage(data));
+    conn.on('close', () => {
+      showConnStatus('与房间断开连接', true);
+      setTimeout(() => { showScreen('lobby'); showMain(); }, 2000);
+    });
+  });
+
+  peer.on('error', err => {
+    clearTimeout(timeout);
+    const msgs = {
+      'network': '无法连接服务器',
+      'server-error': '服务器错误',
+      'peer-unavailable': '房间不存在或房主已离开'
+    };
+    document.getElementById('autojoin-status').textContent = msgs[err.type] || '连接失败: ' + err.type;
+    document.getElementById('autojoin-status').style.color = '#ff6b6b';
+    document.getElementById('btn-autojoin-go').style.display = '';
+    document.getElementById('btn-autojoin-go').textContent = '重试';
+  });
+}
+
+function cancelAutoJoin() {
+  if (peer) { try { peer.destroy(); } catch(e){} peer = null; }
+  connections = [];
+  if (window.history && window.history.replaceState) {
+    history.replaceState(null, '', location.pathname);
+  }
   showMain();
 }
 
@@ -951,6 +1131,11 @@ function sendInput(dir) {
   if (!isHost && connections.length > 0) {
     connections[0].send({type:'input', dir});
   }
+}
+
+// ============ INIT: Check for invite link ============
+if (!checkUrlParams()) {
+  // Normal page load, show main screen
 }
 
 // ============ PWA ============
