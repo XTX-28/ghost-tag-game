@@ -622,9 +622,11 @@ function cancelAutoJoin() {
 // ============ SINGLE PLAYER MODE ============
 const SP_TIME = 300; // 5 minutes
 const BOT_NAMES = ['小灰','小白','小黑','小黄','小粉','小橙','小紫','小绿'];
-const AI_WANDER_CHANGE = 2500; // ms between random direction changes
-const AI_DETECT_GHOST = 180; // px distance to start fleeing
-const AI_FLEE_SPEED_MULT = 1.05; // bots slightly slower than player speed
+const AI_WANDER_CHANGE = 3000; // ms between random direction changes
+const AI_DETECT_GHOST = 220; // px distance to start fleeing
+const AI_RAY_LENGTH = 80; // ray-cast distance for wall look-ahead
+const AI_STUCK_TIME = 1200; // ms before stuck detection kicks in
+const AI_CORNER_PENALTY = 60; // distance threshold for corner detection
 
 let isSinglePlayer = false;
 let spRole = ''; // 'ghost' or 'runner'
@@ -679,9 +681,13 @@ function startSinglePlayer(role) {
     bots.push({
       id: botId,
       dir: {x:0, y:0},
-      wanderTimer: 0,
+      wanderTimer: Math.random() * 2000,
       targetX: pos.x,
-      targetY: pos.y
+      targetY: pos.y,
+      stuckTimer: 0,
+      lastX: pos.x,
+      lastY: pos.y,
+      isStuck: false
     });
   }
 
@@ -767,21 +773,74 @@ function updateBots() {
     const p = players[bot.id];
     if (!p || !p.alive) return;
 
-    const isGhost = p.isGhost;
+    // Stuck detection
+    const moved = Math.hypot(p.x - bot.lastX, p.y - bot.lastY);
+    if (moved < 0.5) {
+      bot.stuckTimer += TICK_RATE;
+    } else {
+      bot.stuckTimer = 0;
+      bot.isStuck = false;
+    }
+    bot.lastX = p.x;
+    bot.lastY = p.y;
+    if (bot.stuckTimer > AI_STUCK_TIME) bot.isStuck = true;
 
-    if (isGhost) {
-      // Ghost AI: chase nearest runner
+    if (p.isGhost) {
       updateGhostBot(bot, p, allRunners);
     } else {
-      // Runner AI: flee from ghost or wander
       updateRunnerBot(bot, p, allGhosts);
     }
 
-    // Apply direction
     p.dir = {...bot.dir};
   });
 }
 
+// ---- Ray-cast helpers ----
+function rayHitsWall(x, y, dx, dy, maxDist) {
+  const step = 6;
+  const steps = Math.ceil(maxDist / step);
+  for (let i = 1; i <= steps; i++) {
+    const t = (i / steps) * maxDist;
+    if (pointInWall(x + dx * t, y + dy * t)) return t;
+  }
+  return maxDist;
+}
+
+function pointInWall(px, py) {
+  for (const w of WALLS) {
+    if (px >= w.x - 2 && px <= w.x + w.w + 2 && py >= w.y - 2 && py <= w.y + w.h + 2) return true;
+  }
+  return false;
+}
+
+function rayDir(x, y, angle, maxDist) {
+  return rayHitsWall(x, y, Math.cos(angle), Math.sin(angle), maxDist);
+}
+
+// Find the best perpendicular escape direction (left or right)
+function bestPerpDir(x, y, baseAngle) {
+  const leftAngle = baseAngle + Math.PI / 2;
+  const rightAngle = baseAngle - Math.PI / 2;
+  const leftDist = rayDir(x, y, leftAngle, AI_RAY_LENGTH);
+  const rightDist = rayDir(x, y, rightAngle, AI_RAY_LENGTH);
+  if (leftDist > rightDist) return {x: Math.cos(leftAngle), y: Math.sin(leftAngle)};
+  return {x: Math.cos(rightAngle), y: Math.sin(rightAngle)};
+}
+
+// Score a position by how "open" it is (far from walls)
+function opennessScore(x, y) {
+  let minDist = Infinity;
+  for (const w of WALLS) {
+    const cx = Math.max(w.x, Math.min(x, w.x + w.w));
+    const cy = Math.max(w.y, Math.min(y, w.y + w.h));
+    minDist = Math.min(minDist, Math.hypot(x - cx, y - cy));
+  }
+  // Also check arena edges
+  minDist = Math.min(minDist, x, y, ARENA_W - x, ARENA_H - y);
+  return minDist;
+}
+
+// ---- Ghost AI ----
 function updateGhostBot(bot, me, runnerIds) {
   if (runnerIds.length === 0) { bot.dir = {x:0,y:0}; return; }
 
@@ -795,7 +854,6 @@ function updateGhostBot(bot, me, runnerIds) {
   });
   if (!nearest) { bot.dir = {x:0,y:0}; return; }
 
-  // Steer toward nearest runner
   const dx = nearest.x - me.x;
   const dy = nearest.y - me.y;
   const dist = Math.hypot(dx, dy);
@@ -803,19 +861,32 @@ function updateGhostBot(bot, me, runnerIds) {
 
   let desiredX = dx / dist;
   let desiredY = dy / dist;
+  const baseAngle = Math.atan2(desiredY, desiredX);
 
-  // Wall avoidance
+  // Forward ray-cast: is there a wall ahead?
+  const fwdDist = rayDir(me.x, me.y, baseAngle, AI_RAY_LENGTH);
+
+  if (fwdDist < 35) {
+    // Wall ahead - steer perpendicular toward the more open side
+    const perp = bestPerpDir(me.x, me.y, baseAngle);
+    const blend = Math.max(0, 1 - fwdDist / 35); // stronger when closer
+    desiredX = desiredX * (1 - blend * 0.8) + perp.x * blend * 0.8;
+    desiredY = desiredY * (1 - blend * 0.8) + perp.y * blend * 0.8;
+  }
+
+  // General wall avoidance
   const avoid = wallAvoidance(me.x, me.y, desiredX, desiredY);
   desiredX += avoid.x * 2.0;
   desiredY += avoid.y * 2.0;
 
-  // Normalize
   const len = Math.hypot(desiredX, desiredY);
   if (len > 0) { bot.dir = {x: desiredX/len, y: desiredY/len}; }
 }
 
+// ---- Runner AI ----
 function updateRunnerBot(bot, me, ghostIds) {
-  // Check if any ghost is nearby
+  // Detect ghosts
+  let nearestGhost = null, ghostDist = Infinity;
   let fleeX = 0, fleeY = 0, fleeing = false;
 
   ghostIds.forEach(gid => {
@@ -823,64 +894,141 @@ function updateRunnerBot(bot, me, ghostIds) {
     if (!g || !g.alive) return;
     const dx = me.x - g.x;
     const dy = me.y - g.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < AI_DETECT_GHOST && dist > 0) {
-      const strength = (AI_DETECT_GHOST - dist) / AI_DETECT_GHOST;
-      fleeX += (dx / dist) * strength;
-      fleeY += (dy / dist) * strength;
+    const d = Math.hypot(dx, dy);
+    if (d < AI_DETECT_GHOST && d > 0) {
+      const strength = (AI_DETECT_GHOST - d) / AI_DETECT_GHOST;
+      fleeX += (dx / d) * strength;
+      fleeY += (dy / d) * strength;
       fleeing = true;
+      if (d < ghostDist) { ghostDist = d; nearestGhost = g; }
     }
   });
 
   let desiredX, desiredY;
 
-  if (fleeing) {
-    // Flee from ghost(s)
-    const len = Math.hypot(fleeX, fleeY);
-    if (len > 0) {
-      desiredX = fleeX / len;
-      desiredY = fleeY / len;
-    } else {
-      desiredX = bot.dir.x || 1;
-      desiredY = bot.dir.y || 0;
+  if (bot.isStuck) {
+    // STUCK ESCAPE: pick a completely new direction perpendicular to current
+    const curAngle = Math.atan2(bot.dir.y || 0, bot.dir.x || 1);
+    const perpAngle = curAngle + (Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2);
+    desiredX = Math.cos(perpAngle);
+    desiredY = Math.sin(perpAngle);
+    bot.wanderTimer = 0; // force new waypoint after escape
+    // If still stuck after escape, teleport-like: just pick the most open direction
+    if (bot.stuckTimer > AI_STUCK_TIME * 2) {
+      let bestAngle = 0, bestScore = -1;
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+        const rd = rayDir(me.x, me.y, a, AI_RAY_LENGTH);
+        if (rd > bestScore) { bestScore = rd; bestAngle = a; }
+      }
+      desiredX = Math.cos(bestAngle);
+      desiredY = Math.sin(bestAngle);
+      bot.stuckTimer = 0;
+      bot.isStuck = false;
+    }
+  } else if (fleeing && nearestGhost) {
+    // FLEE MODE
+    const fleeAngle = Math.atan2(fleeY, fleeX);
+    desiredX = Math.cos(fleeAngle);
+    desiredY = Math.sin(fleeAngle);
+
+    // Check if flee direction is blocked by wall
+    const fleeRayDist = rayDir(me.x, me.y, fleeAngle, AI_RAY_LENGTH);
+
+    if (fleeRayDist < 30) {
+      // Flee direction blocked! Go perpendicular
+      const perp = bestPerpDir(me.x, me.y, fleeAngle);
+      desiredX = perp.x;
+      desiredY = perp.y;
+    } else if (fleeRayDist < 55) {
+      // Partially blocked, blend with perpendicular
+      const perp = bestPerpDir(me.x, me.y, fleeAngle);
+      const blend = (55 - fleeRayDist) / 25;
+      desiredX = desiredX * (1 - blend) + perp.x * blend;
+      desiredY = desiredY * (1 - blend) + perp.y * blend;
+    }
+
+    // Also check for corners: if walls on BOTH sides while fleeing, we might be in a dead end
+    const leftDist = rayDir(me.x, me.y, fleeAngle + Math.PI/2, 40);
+    const rightDist = rayDir(me.x, me.y, fleeAngle - Math.PI/2, 40);
+    if (leftDist < 15 && rightDist < 15) {
+      // In a corridor/dead end - flee backwards (away from the dead end)
+      desiredX = -Math.cos(fleeAngle);
+      desiredY = -Math.sin(fleeAngle);
     }
   } else {
-    // Wander: change direction periodically
+    // WANDER MODE - pick safe waypoints
     bot.wanderTimer -= TICK_RATE;
     if (bot.wanderTimer <= 0) {
-      bot.wanderTimer = AI_WANDER_CHANGE + Math.random() * 1500;
-      // Pick a random target point in the arena
-      bot.targetX = 60 + Math.random() * (ARENA_W - 120);
-      bot.targetY = 60 + Math.random() * (ARENA_H - 120);
+      bot.wanderTimer = AI_WANDER_CHANGE + Math.random() * 2000;
+      bot.targetX = pickSafeWaypoint(me.x, me.y);
+      bot.targetY = pickSafeWaypointY(me.x, me.y);
     }
-    // Steer toward target
+
     const dx = bot.targetX - me.x;
     const dy = bot.targetY - me.y;
     const dist = Math.hypot(dx, dy);
-    if (dist > 10) {
+    if (dist > 15) {
       desiredX = dx / dist;
       desiredY = dy / dist;
     } else {
-      // Reached target, pick new one
       bot.wanderTimer = 0;
       desiredX = bot.dir.x || (Math.random() - 0.5);
       desiredY = bot.dir.y || (Math.random() - 0.5);
     }
+
+    // Forward ray-cast while wandering
+    const wAngle = Math.atan2(desiredY, desiredX);
+    const wFwd = rayDir(me.x, me.y, wAngle, AI_RAY_LENGTH);
+    if (wFwd < 30) {
+      const perp = bestPerpDir(me.x, me.y, wAngle);
+      const blend = Math.max(0, 1 - wFwd / 30);
+      desiredX = desiredX * (1 - blend * 0.7) + perp.x * blend * 0.7;
+      desiredY = desiredY * (1 - blend * 0.7) + perp.y * blend * 0.7;
+    }
   }
 
-  // Wall avoidance (stronger for runners)
+  // General wall avoidance
   const avoid = wallAvoidance(me.x, me.y, desiredX, desiredY);
-  desiredX += avoid.x * 2.5;
-  desiredY += avoid.y * 2.5;
+  desiredX += avoid.x * 3.0;
+  desiredY += avoid.y * 3.0;
 
-  // Normalize
   const len = Math.hypot(desiredX, desiredY);
   if (len > 0) { bot.dir = {x: desiredX/len, y: desiredY/len}; }
 }
 
+// Pick a safe waypoint X coordinate (open area, away from walls)
+function pickSafeWaypoint(curX, curY) {
+  let best = curX, bestScore = -1;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const tx = 50 + Math.random() * (ARENA_W - 100);
+    const ty = 50 + Math.random() * (ARENA_H - 100);
+    // Score: prefer open areas and moderate distance (not too far, not too close)
+    const distFromCur = Math.hypot(tx - curX, ty - curY);
+    if (distFromCur < 60 || distFromCur > 350) continue;
+    const open = opennessScore(tx, ty);
+    const score = open - distFromCur * 0.1;
+    if (score > bestScore) { bestScore = score; best = tx; }
+  }
+  return best;
+}
+
+function pickSafeWaypointY(curX, curY) {
+  let best = curY, bestScore = -1;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const tx = 50 + Math.random() * (ARENA_W - 100);
+    const ty = 50 + Math.random() * (ARENA_H - 100);
+    const distFromCur = Math.hypot(tx - curX, ty - curY);
+    if (distFromCur < 60 || distFromCur > 350) continue;
+    const open = opennessScore(tx, ty);
+    const score = open - distFromCur * 0.1;
+    if (score > bestScore) { bestScore = score; best = ty; }
+  }
+  return best;
+}
+
 function wallAvoidance(x, y, dirX, dirY) {
   let ax = 0, ay = 0;
-  const lookAhead = 50;
+  const lookAhead = 55;
 
   for (const w of WALLS) {
     const cx = Math.max(w.x, Math.min(x, w.x + w.w));
@@ -889,22 +1037,21 @@ function wallAvoidance(x, y, dirX, dirY) {
     const dy = y - cy;
     const dist = Math.hypot(dx, dy);
     if (dist < lookAhead && dist > 0) {
-      const strength = (lookAhead - dist) / lookAhead;
-      ax += (dx / dist) * strength;
-      ay += (dy / dist) * strength;
+      const strength = ((lookAhead - dist) / lookAhead);
+      ax += (dx / dist) * strength * strength; // quadratic for stronger close repulsion
+      ay += (dy / dist) * strength * strength;
     } else if (dist === 0) {
-      // Inside wall, push in movement direction perpendicular
       ax += -dirY;
       ay += dirX;
     }
   }
 
-  // Arena boundaries
-  const margin = 40;
-  if (x < margin) ax += (margin - x) / margin;
-  if (x > ARENA_W - margin) ax -= (x - (ARENA_W - margin)) / margin;
-  if (y < margin) ay += (margin - y) / margin;
-  if (y > ARENA_H - margin) ay -= (y - (ARENA_H - margin)) / margin;
+  // Arena boundaries - stronger push
+  const margin = 50;
+  if (x < margin) ax += ((margin - x) / margin) * 1.5;
+  if (x > ARENA_W - margin) ax -= ((x - (ARENA_W - margin)) / margin) * 1.5;
+  if (y < margin) ay += ((margin - y) / margin) * 1.5;
+  if (y > ARENA_H - margin) ay -= ((y - (ARENA_H - margin)) / margin) * 1.5;
 
   return {x: ax, y: ay};
 }
