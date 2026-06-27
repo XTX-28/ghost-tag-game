@@ -83,6 +83,14 @@ input[type=text]:focus{border-color:#4d96ff}
     </div>
     <button class="btn btn-primary" onclick="createRoom()">创建房间</button>
     <button class="btn btn-secondary" onclick="showJoin()">加入房间</button>
+    <button class="btn btn-danger" onclick="showRoleSelect()">🎮 单机模式</button>
+  </div>
+  <div class="card" id="card-role" style="display:none">
+    <h3>选择你的角色</h3>
+    <div class="status-text" style="margin-bottom:16px">单机模式: 1鬼 vs 4人 · 5分钟限时</div>
+    <button class="btn btn-danger" onclick="startSinglePlayer('ghost')">👻 我要当鬼</button>
+    <button class="btn btn-primary" onclick="startSinglePlayer('runner')">🏃 我要当人类</button>
+    <button class="btn btn-secondary" onclick="showMain()">返回</button>
   </div>
   <div class="card" id="card-join" style="display:none">
     <h3>输入房间号</h3>
@@ -231,7 +239,7 @@ function showScreen(id) {
 let shareUrl = '';
 
 function hideAllCards() {
-  ['card-main','card-join','card-waiting','card-invite','card-autojoin'].forEach(id => {
+  ['card-main','card-join','card-waiting','card-invite','card-autojoin','card-role'].forEach(id => {
     document.getElementById(id).style.display = 'none';
   });
 }
@@ -590,6 +598,381 @@ function cancelAutoJoin() {
   showMain();
 }
 
+// ============ SINGLE PLAYER MODE ============
+const SP_TIME = 300; // 5 minutes
+const BOT_NAMES = ['小灰','小白','小黑','小黄','小粉','小橙','小紫','小绿'];
+const AI_WANDER_CHANGE = 2500; // ms between random direction changes
+const AI_DETECT_GHOST = 180; // px distance to start fleeing
+const AI_FLEE_SPEED_MULT = 1.05; // bots slightly slower than player speed
+
+let isSinglePlayer = false;
+let spRole = ''; // 'ghost' or 'runner'
+let bots = []; // AI bot objects
+let spTickInterval = null;
+let spTimerInterval = null;
+
+function showRoleSelect() {
+  hideAllCards();
+  document.getElementById('card-role').style.display = '';
+}
+
+function startSinglePlayer(role) {
+  isSinglePlayer = true;
+  spRole = role;
+  isHost = true; // we run the game logic locally
+  myName = document.getElementById('player-name').value.trim() || NAMES_DEFAULT[Math.floor(Math.random() * NAMES_DEFAULT.length)];
+  myColor = role === 'ghost' ? 0 : 1;
+  roomCode = 'SINGLE';
+
+  // Create players
+  players = {};
+  bots = [];
+  const spawnPositions = [
+    {x:400,y:300},{x:100,y:100},{x:700,y:100},{x:100,y:500},{x:700,y:500}
+  ];
+
+  // Player
+  const myPlayerId = 'player-self';
+  const playerIsGhost = (role === 'ghost');
+  players[myPlayerId] = {
+    id: myPlayerId, name: myName, color: myColor,
+    x: spawnPositions[0].x, y: spawnPositions[0].y,
+    isGhost: playerIsGhost, dir: {x:0,y:0}, score: 0, alive: true
+  };
+  myId = myPlayerId;
+
+  // Create 4 bots
+  const botNames = shuffleCopy(BOT_NAMES).slice(0, 4);
+  for (let i = 0; i < 4; i++) {
+    const botId = 'bot-' + i;
+    const botIsGhost = (role === 'runner'); // if player is runner, a bot is the ghost
+    const botColor = (i + 2) % COLORS.length;
+    const pos = spawnPositions[i + 1] || {x: 200 + Math.random()*400, y: 200 + Math.random()*200};
+    players[botId] = {
+      id: botId, name: botNames[i], color: botColor,
+      x: pos.x, y: pos.y,
+      isGhost: botIsGhost, dir: {x:0,y:0}, score: 0, alive: true
+    };
+    bots.push({
+      id: botId,
+      dir: {x:0, y:0},
+      wanderTimer: 0,
+      targetX: pos.x,
+      targetY: pos.y
+    });
+  }
+
+  gameTime = SP_TIME;
+  connections = [];
+  gameRunning = true;
+
+  // Start game
+  showScreen('game-screen');
+  initCanvas();
+  showCountdown(3, () => {
+    spTickInterval = setInterval(singlePlayerTick, TICK_RATE);
+    spTimerInterval = setInterval(() => {
+      gameTime--;
+      if (gameTime <= 0) {
+        gameTime = 0;
+        finishSinglePlayer();
+      }
+    }, 1000);
+    updateHUD();
+    requestAnimationFrame(gameLoop);
+  });
+}
+
+function shuffleCopy(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ============ SINGLE PLAYER TICK ============
+function singlePlayerTick() {
+  const ids = Object.keys(players);
+
+  // Update AI bots
+  updateBots();
+
+  // Move all players (same as hostTick)
+  ids.forEach(id => {
+    const p = players[id];
+    if (!p.alive) return;
+    const speed = p.isGhost ? GHOST_SPEED : PLAYER_SPEED;
+    let nx = p.x + p.dir.x * speed;
+    let ny = p.y + p.dir.y * speed;
+    if (!collidesWall(nx, p.y, PLAYER_R)) p.x = nx;
+    if (!collidesWall(p.x, ny, PLAYER_R)) p.y = ny;
+    p.x = Math.max(PLAYER_R, Math.min(ARENA_W - PLAYER_R, p.x));
+    p.y = Math.max(PLAYER_R, Math.min(ARENA_H - PLAYER_R, p.y));
+  });
+
+  // Tag detection
+  const ghosts = ids.filter(id => players[id].isGhost && players[id].alive);
+  const runners = ids.filter(id => !players[id].isGhost && players[id].alive);
+  ghosts.forEach(gid => {
+    runners.forEach(rid => {
+      const g = players[gid], r = players[rid];
+      if (Math.hypot(g.x - r.x, g.y - r.y) < TAG_DIST) {
+        r.isGhost = true;
+        g.score += 10;
+      }
+    });
+  });
+
+  // Check game end
+  const currentRunners = ids.filter(id => !players[id].isGhost && players[id].alive);
+  if (currentRunners.length === 0) {
+    finishSinglePlayer();
+  }
+
+  updateHUD();
+}
+
+// ============ AI BOT LOGIC ============
+function updateBots() {
+  const ids = Object.keys(players);
+  const allGhosts = ids.filter(id => players[id].isGhost && players[id].alive);
+  const allRunners = ids.filter(id => !players[id].isGhost && players[id].alive);
+
+  bots.forEach(bot => {
+    const p = players[bot.id];
+    if (!p || !p.alive) return;
+
+    const isGhost = p.isGhost;
+
+    if (isGhost) {
+      // Ghost AI: chase nearest runner
+      updateGhostBot(bot, p, allRunners);
+    } else {
+      // Runner AI: flee from ghost or wander
+      updateRunnerBot(bot, p, allGhosts);
+    }
+
+    // Apply direction
+    p.dir = {...bot.dir};
+  });
+}
+
+function updateGhostBot(bot, me, runnerIds) {
+  if (runnerIds.length === 0) { bot.dir = {x:0,y:0}; return; }
+
+  // Find nearest runner
+  let nearest = null, nearDist = Infinity;
+  runnerIds.forEach(rid => {
+    const r = players[rid];
+    if (!r || !r.alive) return;
+    const d = Math.hypot(r.x - me.x, r.y - me.y);
+    if (d < nearDist) { nearDist = d; nearest = r; }
+  });
+  if (!nearest) { bot.dir = {x:0,y:0}; return; }
+
+  // Steer toward nearest runner
+  const dx = nearest.x - me.x;
+  const dy = nearest.y - me.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 1) { bot.dir = {x:0,y:0}; return; }
+
+  let desiredX = dx / dist;
+  let desiredY = dy / dist;
+
+  // Wall avoidance
+  const avoid = wallAvoidance(me.x, me.y, desiredX, desiredY);
+  desiredX += avoid.x * 2.0;
+  desiredY += avoid.y * 2.0;
+
+  // Normalize
+  const len = Math.hypot(desiredX, desiredY);
+  if (len > 0) { bot.dir = {x: desiredX/len, y: desiredY/len}; }
+}
+
+function updateRunnerBot(bot, me, ghostIds) {
+  // Check if any ghost is nearby
+  let fleeX = 0, fleeY = 0, fleeing = false;
+
+  ghostIds.forEach(gid => {
+    const g = players[gid];
+    if (!g || !g.alive) return;
+    const dx = me.x - g.x;
+    const dy = me.y - g.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < AI_DETECT_GHOST && dist > 0) {
+      const strength = (AI_DETECT_GHOST - dist) / AI_DETECT_GHOST;
+      fleeX += (dx / dist) * strength;
+      fleeY += (dy / dist) * strength;
+      fleeing = true;
+    }
+  });
+
+  let desiredX, desiredY;
+
+  if (fleeing) {
+    // Flee from ghost(s)
+    const len = Math.hypot(fleeX, fleeY);
+    if (len > 0) {
+      desiredX = fleeX / len;
+      desiredY = fleeY / len;
+    } else {
+      desiredX = bot.dir.x || 1;
+      desiredY = bot.dir.y || 0;
+    }
+  } else {
+    // Wander: change direction periodically
+    bot.wanderTimer -= TICK_RATE;
+    if (bot.wanderTimer <= 0) {
+      bot.wanderTimer = AI_WANDER_CHANGE + Math.random() * 1500;
+      // Pick a random target point in the arena
+      bot.targetX = 60 + Math.random() * (ARENA_W - 120);
+      bot.targetY = 60 + Math.random() * (ARENA_H - 120);
+    }
+    // Steer toward target
+    const dx = bot.targetX - me.x;
+    const dy = bot.targetY - me.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 10) {
+      desiredX = dx / dist;
+      desiredY = dy / dist;
+    } else {
+      // Reached target, pick new one
+      bot.wanderTimer = 0;
+      desiredX = bot.dir.x || (Math.random() - 0.5);
+      desiredY = bot.dir.y || (Math.random() - 0.5);
+    }
+  }
+
+  // Wall avoidance (stronger for runners)
+  const avoid = wallAvoidance(me.x, me.y, desiredX, desiredY);
+  desiredX += avoid.x * 2.5;
+  desiredY += avoid.y * 2.5;
+
+  // Normalize
+  const len = Math.hypot(desiredX, desiredY);
+  if (len > 0) { bot.dir = {x: desiredX/len, y: desiredY/len}; }
+}
+
+function wallAvoidance(x, y, dirX, dirY) {
+  let ax = 0, ay = 0;
+  const lookAhead = 50;
+
+  for (const w of WALLS) {
+    const cx = Math.max(w.x, Math.min(x, w.x + w.w));
+    const cy = Math.max(w.y, Math.min(y, w.y + w.h));
+    const dx = x - cx;
+    const dy = y - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < lookAhead && dist > 0) {
+      const strength = (lookAhead - dist) / lookAhead;
+      ax += (dx / dist) * strength;
+      ay += (dy / dist) * strength;
+    } else if (dist === 0) {
+      // Inside wall, push in movement direction perpendicular
+      ax += -dirY;
+      ay += dirX;
+    }
+  }
+
+  // Arena boundaries
+  const margin = 40;
+  if (x < margin) ax += (margin - x) / margin;
+  if (x > ARENA_W - margin) ax -= (x - (ARENA_W - margin)) / margin;
+  if (y < margin) ay += (margin - y) / margin;
+  if (y > ARENA_H - margin) ay -= (y - (ARENA_H - margin)) / margin;
+
+  return {x: ax, y: ay};
+}
+
+// ============ SINGLE PLAYER END ============
+function finishSinglePlayer() {
+  clearInterval(spTickInterval);
+  clearInterval(spTimerInterval);
+  spTickInterval = null;
+  spTimerInterval = null;
+  gameRunning = false;
+
+  const ids = Object.keys(players);
+  const runnersLeft = ids.filter(id => !players[id].isGhost && players[id].alive);
+  const allCaught = runnersLeft.length === 0;
+
+  // Determine result
+  const me = players[myId];
+  let title, sub;
+
+  if (spRole === 'ghost') {
+    // Player is ghost
+    if (allCaught) {
+      title = '胜利!';
+      sub = '你在时间内抓住了所有人!';
+    } else {
+      title = '失败!';
+      sub = `时间到! 还有 ${runnersLeft.length} 人没被抓住`;
+    }
+  } else {
+    // Player is runner
+    if (me && !me.isGhost) {
+      title = '胜利!';
+      sub = '你成功存活到了最后!';
+    } else {
+      title = '被抓住了!';
+      sub = '你变成了鬼...';
+    }
+  }
+
+  // Calculate scores
+  const results = Object.values(players).map(p => ({
+    name: p.name,
+    score: p.score + (!p.isGhost ? Math.floor(gameTime) * 2 : 0),
+    survived: !p.isGhost
+  })).sort((a,b) => b.score - a.score);
+
+  // Show result
+  const el = document.getElementById('result');
+  const titleEl = document.getElementById('result-title');
+  const subEl = document.getElementById('result-sub');
+
+  if (title === '胜利!') {
+    titleEl.style.background = 'linear-gradient(90deg,#ffd93d,#6bcb77)';
+  } else {
+    titleEl.style.background = 'linear-gradient(90deg,#ff6b6b,#ee5a24)';
+  }
+  titleEl.textContent = title;
+  titleEl.style.webkitBackgroundClip = 'text';
+  titleEl.style.webkitTextFillColor = 'transparent';
+  subEl.textContent = sub;
+
+  const scoresEl = document.getElementById('result-scores');
+  scoresEl.innerHTML = '';
+  results.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'result-row';
+    row.innerHTML = `<span class="result-rank">${i===0?'👑':''} #${i+1} ${r.name} ${r.survived?'🏃':'👻'}</span><span class="result-score">${r.score}分</span>`;
+    scoresEl.appendChild(row);
+  });
+  el.classList.add('active');
+}
+
+function playAgainSinglePlayer() {
+  document.getElementById('result').classList.remove('active');
+  if (isSinglePlayer) {
+    startSinglePlayer(spRole);
+  } else if (isHost) {
+    startGame();
+  }
+}
+
+function backToLobbySinglePlayer() {
+  document.getElementById('result').classList.remove('active');
+  isSinglePlayer = false;
+  bots = [];
+  gameRunning = false;
+  showScreen('lobby');
+  showMain();
+}
+
 // ============ HOST MESSAGE HANDLING ============
 function handleHostMessage(conn, data) {
   if (data.type === 'join') {
@@ -825,16 +1208,25 @@ function endGame(results) {
 
 function playAgain() {
   document.getElementById('result').classList.remove('active');
-  if (isHost) {
+  if (isSinglePlayer) {
+    startSinglePlayer(spRole);
+  } else if (isHost) {
     startGame();
   }
 }
 
 function backToLobby() {
   document.getElementById('result').classList.remove('active');
-  showScreen('lobby');
-  showWaiting();
-  if (isHost) updatePlayersList();
+  if (isSinglePlayer) {
+    isSinglePlayer = false;
+    bots = [];
+    showScreen('lobby');
+    showMain();
+  } else {
+    showScreen('lobby');
+    showWaiting();
+    if (isHost) updatePlayersList();
+  }
 }
 
 // ============ CANVAS ============
@@ -1004,8 +1396,15 @@ function collidesWall(x, y, r) {
 // ============ HUD ============
 function updateHUD() {
   const timer = document.getElementById('hud-timer');
-  timer.textContent = Math.ceil(gameTime);
-  timer.className = 'hud-timer' + (gameTime <= 15 ? ' urgent' : '');
+  if (isSinglePlayer) {
+    const mins = Math.floor(gameTime / 60);
+    const secs = Math.ceil(gameTime % 60);
+    timer.textContent = mins + ':' + (secs < 10 ? '0' : '') + secs;
+    timer.className = 'hud-timer' + (gameTime <= 30 ? ' urgent' : '');
+  } else {
+    timer.textContent = Math.ceil(gameTime);
+    timer.className = 'hud-timer' + (gameTime <= 15 ? ' urgent' : '');
+  }
 
   const me = players[myId];
   const role = document.getElementById('hud-role');
