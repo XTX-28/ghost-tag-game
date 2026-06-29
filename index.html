@@ -179,7 +179,7 @@ input[type=text]:focus{border-color:#4d96ff;box-shadow:0 0 0 3px rgba(77,150,255
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 // ============ CONFIG ============
-const ARENA_W = 800, ARENA_H = 600;
+const ARENA_W = 1000, ARENA_H = 700;
 const PLAYER_R = 14;
 const PLAYER_SPEED = 2.8;
 const GHOST_SPEED = 3.1;
@@ -234,22 +234,49 @@ let canvasOffX = 0, canvasOffY = 0;
 let joystickActive = false;
 let joystickCenter = {x:0, y:0};
 
-// Walls/obstacles
+// Walls/obstacles - Complex map with 4 corner rooms, corridors, central structure
 const WALLS = [
-  {x:150,y:100,w:20,h:120},
-  {x:150,y:100,w:100,h:20},
-  {x:630,y:100,w:20,h:120},
-  {x:550,y:100,w:100,h:20},
-  {x:150,y:380,w:20,h:120},
-  {x:150,y:480,w:100,h:20},
-  {x:630,y:380,w:20,h:120},
-  {x:550,y:480,w:100,h:20},
-  {x:350,y:200,w:100,h:20},
-  {x:350,y:380,w:100,h:20},
-  {x:350,y:200,w:20,h:80},
-  {x:430,y:300,w:20,h:80},
-  {x:250,y:250,w:60,h:20},
-  {x:490,y:330,w:60,h:20},
+  // === TOP-LEFT ROOM (shelter with entrance on right/bottom) ===
+  {x:60,y:60,w:130,h:16},
+  {x:60,y:60,w:16,h:110},
+  {x:60,y:154,w:90,h:16},
+
+  // === TOP-RIGHT ROOM (shelter with entrance on left/bottom) ===
+  {x:810,y:60,w:130,h:16},
+  {x:924,y:60,w:16,h:110},
+  {x:850,y:154,w:90,h:16},
+
+  // === BOTTOM-LEFT ROOM (shelter with entrance on right/top) ===
+  {x:60,y:530,w:130,h:16},
+  {x:60,y:436,w:16,h:110},
+  {x:60,y:436,w:90,h:16},
+
+  // === BOTTOM-RIGHT ROOM (shelter with entrance on left/top) ===
+  {x:810,y:530,w:130,h:16},
+  {x:924,y:436,w:16,h:110},
+  {x:850,y:436,w:90,h:16},
+
+  // === CENTRAL DIAMOND STRUCTURE ===
+  {x:460,y:290,w:80,h:16},
+  {x:460,y:394,w:80,h:16},
+  {x:440,y:306,w:16,h:88},
+  {x:544,y:306,w:16,h:88},
+
+  // === TOP/BOTTOM HORIZONTAL BARRIERS (create corridors) ===
+  {x:320,y:180,w:100,h:16},
+  {x:580,y:180,w:100,h:16},
+  {x:320,y:504,w:100,h:16},
+  {x:580,y:504,w:100,h:16},
+
+  // === CORRIDOR PILLARS (create cover while crossing) ===
+  {x:270,y:330,w:28,h:28},
+  {x:702,y:330,w:28,h:28},
+
+  // === SCATTERED BOULDERS (extra cover) ===
+  {x:195,y:280,w:35,h:16},
+  {x:770,y:390,w:35,h:16},
+  {x:490,y:100,w:20,h:20},
+  {x:490,y:580,w:20,h:20},
 ];
 
 // ============ SCREENS ============
@@ -651,7 +678,7 @@ function startSinglePlayer(role) {
   players = {};
   bots = [];
   const spawnPositions = [
-    {x:400,y:300},{x:100,y:100},{x:700,y:100},{x:100,y:500},{x:700,y:500}
+    {x:500,y:350},{x:120,y:110},{x:870,y:110},{x:120,y:580},{x:870,y:580}
   ];
 
   // Player
@@ -763,7 +790,7 @@ function singlePlayerTick() {
   updateHUD();
 }
 
-// ============ AI BOT LOGIC ============
+// ============ AI BOT LOGIC (v2 - improved) ============
 function updateBots() {
   const ids = Object.keys(players);
   const allGhosts = ids.filter(id => players[id].isGhost && players[id].alive);
@@ -773,7 +800,6 @@ function updateBots() {
     const p = players[bot.id];
     if (!p || !p.alive) return;
 
-    // Stuck detection
     const moved = Math.hypot(p.x - bot.lastX, p.y - bot.lastY);
     if (moved < 0.5) {
       bot.stuckTimer += TICK_RATE;
@@ -797,7 +823,7 @@ function updateBots() {
 
 // ---- Ray-cast helpers ----
 function rayHitsWall(x, y, dx, dy, maxDist) {
-  const step = 6;
+  const step = 5;
   const steps = Math.ceil(maxDist / step);
   for (let i = 1; i <= steps; i++) {
     const t = (i / steps) * maxDist;
@@ -817,7 +843,6 @@ function rayDir(x, y, angle, maxDist) {
   return rayHitsWall(x, y, Math.cos(angle), Math.sin(angle), maxDist);
 }
 
-// Find the best perpendicular escape direction (left or right)
 function bestPerpDir(x, y, baseAngle) {
   const leftAngle = baseAngle + Math.PI / 2;
   const rightAngle = baseAngle - Math.PI / 2;
@@ -827,7 +852,6 @@ function bestPerpDir(x, y, baseAngle) {
   return {x: Math.cos(rightAngle), y: Math.sin(rightAngle)};
 }
 
-// Score a position by how "open" it is (far from walls)
 function opennessScore(x, y) {
   let minDist = Infinity;
   for (const w of WALLS) {
@@ -835,16 +859,54 @@ function opennessScore(x, y) {
     const cy = Math.max(w.y, Math.min(y, w.y + w.h));
     minDist = Math.min(minDist, Math.hypot(x - cx, y - cy));
   }
-  // Also check arena edges
   minDist = Math.min(minDist, x, y, ARENA_W - x, ARENA_H - y);
   return minDist;
+}
+
+// Check if path between two points is clear of walls
+function isPathClear(x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 5) return true;
+  const steps = Math.ceil(dist / 12);
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    if (pointInWall(x1 + dx * t, y1 + dy * t)) return false;
+  }
+  return true;
+}
+
+// Find the safest direction to flee, evaluating multiple candidate directions
+function findSafestFleeDir(x, y, ghostDists) {
+  let bestAngle = 0, bestScore = -Infinity;
+  for (let a = 0; a < Math.PI * 2; a += Math.PI / 12) {
+    const rayDist = rayDir(x, y, a, 120);
+    if (rayDist < 18) continue; // skip directions blocked by nearby wall
+
+    // Score destination point at 80px in this direction
+    const destX = x + Math.cos(a) * 80;
+    const destY = y + Math.sin(a) * 80;
+    let score = opennessScore(destX, destY) * 2;
+    score += Math.min(rayDist, 100);
+
+    // Bonus: path to destination is clear
+    if (isPathClear(x, y, destX, destY)) score += 60;
+
+    // Bonus: farther from all ghosts
+    ghostDists.forEach(g => {
+      const gd = Math.hypot(destX - g.x, destY - g.y);
+      score += Math.min(gd, 250) * 0.4;
+    });
+
+    if (score > bestScore) { bestScore = score; bestAngle = a; }
+  }
+  return {x: Math.cos(bestAngle), y: Math.sin(bestAngle)};
 }
 
 // ---- Ghost AI ----
 function updateGhostBot(bot, me, runnerIds) {
   if (runnerIds.length === 0) { bot.dir = {x:0,y:0}; return; }
 
-  // Find nearest runner
   let nearest = null, nearDist = Infinity;
   runnerIds.forEach(rid => {
     const r = players[rid];
@@ -863,18 +925,15 @@ function updateGhostBot(bot, me, runnerIds) {
   let desiredY = dy / dist;
   const baseAngle = Math.atan2(desiredY, desiredX);
 
-  // Forward ray-cast: is there a wall ahead?
+  // Forward ray-cast: wall ahead?
   const fwdDist = rayDir(me.x, me.y, baseAngle, AI_RAY_LENGTH);
-
   if (fwdDist < 35) {
-    // Wall ahead - steer perpendicular toward the more open side
     const perp = bestPerpDir(me.x, me.y, baseAngle);
-    const blend = Math.max(0, 1 - fwdDist / 35); // stronger when closer
+    const blend = Math.max(0, 1 - fwdDist / 35);
     desiredX = desiredX * (1 - blend * 0.8) + perp.x * blend * 0.8;
     desiredY = desiredY * (1 - blend * 0.8) + perp.y * blend * 0.8;
   }
 
-  // General wall avoidance
   const avoid = wallAvoidance(me.x, me.y, desiredX, desiredY);
   desiredX += avoid.x * 2.0;
   desiredY += avoid.y * 2.0;
@@ -883,11 +942,11 @@ function updateGhostBot(bot, me, runnerIds) {
   if (len > 0) { bot.dir = {x: desiredX/len, y: desiredY/len}; }
 }
 
-// ---- Runner AI ----
+// ---- Runner AI (v2 - major improvements) ----
 function updateRunnerBot(bot, me, ghostIds) {
-  // Detect ghosts
-  let nearestGhost = null, ghostDist = Infinity;
+  // Detect ghosts and compute flee vectors
   let fleeX = 0, fleeY = 0, fleeing = false;
+  const activeGhosts = [];
 
   ghostIds.forEach(gid => {
     const g = players[gid];
@@ -900,68 +959,91 @@ function updateRunnerBot(bot, me, ghostIds) {
       fleeX += (dx / d) * strength;
       fleeY += (dy / d) * strength;
       fleeing = true;
-      if (d < ghostDist) { ghostDist = d; nearestGhost = g; }
+      activeGhosts.push(g);
     }
   });
 
   let desiredX, desiredY;
 
   if (bot.isStuck) {
-    // STUCK ESCAPE: pick a completely new direction perpendicular to current
-    const curAngle = Math.atan2(bot.dir.y || 0, bot.dir.x || 1);
-    const perpAngle = curAngle + (Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2);
-    desiredX = Math.cos(perpAngle);
-    desiredY = Math.sin(perpAngle);
-    bot.wanderTimer = 0; // force new waypoint after escape
-    // If still stuck after escape, teleport-like: just pick the most open direction
-    if (bot.stuckTimer > AI_STUCK_TIME * 2) {
-      let bestAngle = 0, bestScore = -1;
-      for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
-        const rd = rayDir(me.x, me.y, a, AI_RAY_LENGTH);
-        if (rd > bestScore) { bestScore = rd; bestAngle = a; }
-      }
-      desiredX = Math.cos(bestAngle);
-      desiredY = Math.sin(bestAngle);
+    // === STUCK ESCAPE: full surround scan to find most open direction ===
+    let bestAngle = 0, bestScore = -1;
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 16) {
+      const rd = rayDir(me.x, me.y, a, AI_RAY_LENGTH * 1.5);
+      const destOpen = opennessScore(
+        me.x + Math.cos(a) * 50,
+        me.y + Math.sin(a) * 50
+      );
+      const score = rd * 0.6 + destOpen * 0.4;
+      if (score > bestScore) { bestScore = score; bestAngle = a; }
+    }
+    desiredX = Math.cos(bestAngle);
+    desiredY = Math.sin(bestAngle);
+    bot.wanderTimer = 0;
+    if (bot.stuckTimer > AI_STUCK_TIME * 1.5) {
       bot.stuckTimer = 0;
       bot.isStuck = false;
     }
-  } else if (fleeing && nearestGhost) {
-    // FLEE MODE
-    const fleeAngle = Math.atan2(fleeY, fleeX);
-    desiredX = Math.cos(fleeAngle);
-    desiredY = Math.sin(fleeAngle);
 
-    // Check if flee direction is blocked by wall
-    const fleeRayDist = rayDir(me.x, me.y, fleeAngle, AI_RAY_LENGTH);
-
-    if (fleeRayDist < 30) {
-      // Flee direction blocked! Go perpendicular
-      const perp = bestPerpDir(me.x, me.y, fleeAngle);
-      desiredX = perp.x;
-      desiredY = perp.y;
-    } else if (fleeRayDist < 55) {
-      // Partially blocked, blend with perpendicular
-      const perp = bestPerpDir(me.x, me.y, fleeAngle);
-      const blend = (55 - fleeRayDist) / 25;
-      desiredX = desiredX * (1 - blend) + perp.x * blend;
-      desiredY = desiredY * (1 - blend) + perp.y * blend;
+  } else if (fleeing) {
+    // === FLEE MODE ===
+    // Check if surrounded on 3+ sides (dead end / corridor trap)
+    let blockedSides = 0;
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+      if (rayDir(me.x, me.y, a, 35) < 20) blockedSides++;
     }
 
-    // Also check for corners: if walls on BOTH sides while fleeing, we might be in a dead end
-    const leftDist = rayDir(me.x, me.y, fleeAngle + Math.PI/2, 40);
-    const rightDist = rayDir(me.x, me.y, fleeAngle - Math.PI/2, 40);
-    if (leftDist < 15 && rightDist < 15) {
-      // In a corridor/dead end - flee backwards (away from the dead end)
-      desiredX = -Math.cos(fleeAngle);
-      desiredY = -Math.sin(fleeAngle);
+    if (blockedSides >= 5) {
+      // Deeply trapped - use full safest-direction scan
+      const safest = findSafestFleeDir(me.x, me.y, activeGhosts);
+      desiredX = safest.x;
+      desiredY = safest.y;
+    } else if (blockedSides >= 3) {
+      // In a corridor or near dead-end - evaluate carefully
+      const fleeAngle = Math.atan2(fleeY, fleeX);
+      const fwdBlocked = rayDir(me.x, me.y, fleeAngle, 45) < 25;
+
+      if (fwdBlocked) {
+        // Can't go forward, use safest direction
+        const safest = findSafestFleeDir(me.x, me.y, activeGhosts);
+        desiredX = safest.x;
+        desiredY = safest.y;
+      } else {
+        // Can go forward but check sides
+        const perp = bestPerpDir(me.x, me.y, fleeAngle);
+        desiredX = fleeX; desiredY = fleeY;
+        const fl = Math.hypot(desiredX, desiredY);
+        if (fl > 0) { desiredX /= fl; desiredY /= fl; }
+        desiredX = desiredX * 0.5 + perp.x * 0.5;
+        desiredY = desiredY * 0.5 + perp.y * 0.5;
+      }
+    } else {
+      // Open area - normal flee with wall check
+      const fleeAngle = Math.atan2(fleeY, fleeX);
+      desiredX = Math.cos(fleeAngle);
+      desiredY = Math.sin(fleeAngle);
+
+      const fleeRayDist = rayDir(me.x, me.y, fleeAngle, AI_RAY_LENGTH);
+      if (fleeRayDist < 30) {
+        const perp = bestPerpDir(me.x, me.y, fleeAngle);
+        desiredX = perp.x;
+        desiredY = perp.y;
+      } else if (fleeRayDist < 55) {
+        const perp = bestPerpDir(me.x, me.y, fleeAngle);
+        const blend = (55 - fleeRayDist) / 25;
+        desiredX = desiredX * (1 - blend) + perp.x * blend;
+        desiredY = desiredY * (1 - blend) + perp.y * blend;
+      }
     }
+
   } else {
-    // WANDER MODE - pick safe waypoints
+    // === WANDER MODE - pick safe waypoint with path validation ===
     bot.wanderTimer -= TICK_RATE;
     if (bot.wanderTimer <= 0) {
       bot.wanderTimer = AI_WANDER_CHANGE + Math.random() * 2000;
-      bot.targetX = pickSafeWaypoint(me.x, me.y);
-      bot.targetY = pickSafeWaypointY(me.x, me.y);
+      const wp = pickSafeWaypoint(me.x, me.y, ghostIds);
+      bot.targetX = wp.x;
+      bot.targetY = wp.y;
     }
 
     const dx = bot.targetX - me.x;
@@ -996,34 +1078,55 @@ function updateRunnerBot(bot, me, ghostIds) {
   if (len > 0) { bot.dir = {x: desiredX/len, y: desiredY/len}; }
 }
 
-// Pick a safe waypoint X coordinate (open area, away from walls)
-function pickSafeWaypoint(curX, curY) {
-  let best = curX, bestScore = -1;
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const tx = 50 + Math.random() * (ARENA_W - 100);
-    const ty = 50 + Math.random() * (ARENA_H - 100);
-    // Score: prefer open areas and moderate distance (not too far, not too close)
-    const distFromCur = Math.hypot(tx - curX, ty - curY);
-    if (distFromCur < 60 || distFromCur > 350) continue;
-    const open = opennessScore(tx, ty);
-    const score = open - distFromCur * 0.1;
-    if (score > bestScore) { bestScore = score; best = tx; }
-  }
-  return best;
-}
+// Pick a safe waypoint considering openness, path clearance, and ghost distance
+function pickSafeWaypoint(curX, curY, ghostIds) {
+  let bestX = curX, bestY = curY, bestScore = -Infinity;
 
-function pickSafeWaypointY(curX, curY) {
-  let best = curY, bestScore = -1;
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const tx = 50 + Math.random() * (ARENA_W - 100);
-    const ty = 50 + Math.random() * (ARENA_H - 100);
+  for (let attempt = 0; attempt < 15; attempt++) {
+    const tx = 40 + Math.random() * (ARENA_W - 80);
+    const ty = 40 + Math.random() * (ARENA_H - 80);
     const distFromCur = Math.hypot(tx - curX, ty - curY);
-    if (distFromCur < 60 || distFromCur > 350) continue;
+    if (distFromCur < 50 || distFromCur > 400) continue;
+
     const open = opennessScore(tx, ty);
-    const score = open - distFromCur * 0.1;
-    if (score > bestScore) { bestScore = score; best = ty; }
+    if (open < 22) continue; // too close to walls
+
+    // Path must be clear
+    if (!isPathClear(curX, curY, tx, ty)) continue;
+
+    // Bonus for distance from ghosts
+    let ghostBonus = 0;
+    if (ghostIds) {
+      ghostIds.forEach(gid => {
+        const g = players[gid];
+        if (g && g.alive) {
+          const gd = Math.hypot(tx - g.x, ty - g.y);
+          ghostBonus += Math.min(gd, 350) * 0.25;
+        }
+      });
+    }
+
+    const score = open * 1.5 + ghostBonus - distFromCur * 0.08;
+    if (score > bestScore) {
+      bestScore = score;
+      bestX = tx;
+      bestY = ty;
+    }
   }
-  return best;
+
+  // Fallback: if no good waypoint found, pick the most open nearby direction
+  if (bestScore === -Infinity) {
+    let bestAngle = Math.random() * Math.PI * 2;
+    let bestOpen = 0;
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+      const rd = rayDir(curX, curY, a, 100);
+      if (rd > bestOpen) { bestOpen = rd; bestAngle = a; }
+    }
+    bestX = curX + Math.cos(bestAngle) * 60;
+    bestY = curY + Math.sin(bestAngle) * 60;
+  }
+
+  return {x: bestX, y: bestY};
 }
 
 function wallAvoidance(x, y, dirX, dirY) {
@@ -1038,7 +1141,7 @@ function wallAvoidance(x, y, dirX, dirY) {
     const dist = Math.hypot(dx, dy);
     if (dist < lookAhead && dist > 0) {
       const strength = ((lookAhead - dist) / lookAhead);
-      ax += (dx / dist) * strength * strength; // quadratic for stronger close repulsion
+      ax += (dx / dist) * strength * strength;
       ay += (dy / dist) * strength * strength;
     } else if (dist === 0) {
       ax += -dirY;
@@ -1046,8 +1149,7 @@ function wallAvoidance(x, y, dirX, dirY) {
     }
   }
 
-  // Arena boundaries - stronger push
-  const margin = 50;
+  const margin = 40;
   if (x < margin) ax += ((margin - x) / margin) * 1.5;
   if (x > ARENA_W - margin) ax -= ((x - (ARENA_W - margin)) / margin) * 1.5;
   if (y < margin) ay += ((margin - y) / margin) * 1.5;
@@ -1206,9 +1308,9 @@ function broadcast(data) {
 // ============ SPAWN POSITIONS ============
 function getSpawnPos() {
   const positions = [
-    {x:100,y:100},{x:700,y:100},{x:100,y:500},{x:700,y:500},
-    {x:400,y:300},{x:200,y:300},{x:600,y:300},{x:400,y:150},
-    {x:300,y:450},{x:500,y:450}
+    {x:120,y:110},{x:870,y:110},{x:120,y:580},{x:870,y:580},
+    {x:500,y:350},{x:300,y:350},{x:700,y:350},{x:500,y:150},
+    {x:350,y:550},{x:650,y:550}
   ];
   const used = Object.values(players).map(p => ({x:p.x, y:p.y}));
   for (const pos of positions) {
@@ -1570,70 +1672,222 @@ function drawPlayer(p, isGhost) {
   const color = COLORS[p.color] || COLORS[0];
   const t = frameCount * 0.05;
 
-  // Outer aura
-  if (isGhost) {
-    const pulse = 0.8 + Math.sin(t * 2) * 0.2;
-    const glow = ctx.createRadialGradient(s.x, s.y, r * 0.3, s.x, s.y, r * 3 * pulse);
-    glow.addColorStop(0, 'rgba(255,80,80,0.12)');
-    glow.addColorStop(0.5, 'rgba(255,60,60,0.05)');
-    glow.addColorStop(1, 'rgba(255,40,40,0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(s.x, s.y, r * 3 * pulse, 0, Math.PI * 2); ctx.fill();
-  } else {
-    const glow = ctx.createRadialGradient(s.x, s.y, r * 0.5, s.x, s.y, r * 1.8);
-    glow.addColorStop(0, `rgba(${hexToRgb(color)},0.08)`);
-    glow.addColorStop(1, `rgba(${hexToRgb(color)},0)`);
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(s.x, s.y, r * 1.8, 0, Math.PI * 2); ctx.fill();
-  }
-
-  // Body shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.beginPath(); ctx.ellipse(s.x + 2, s.y + 3, r * 0.9, r * 0.5, 0, 0, Math.PI * 2); ctx.fill();
-
-  // Body
-  ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-  if (isGhost) {
-    const grad = ctx.createRadialGradient(s.x - r*0.25, s.y - r*0.25, r*0.1, s.x, s.y, r);
-    grad.addColorStop(0, '#ff9a9a');
-    grad.addColorStop(0.6, '#ff4444');
-    grad.addColorStop(1, '#cc2222');
-    ctx.fillStyle = grad;
-  } else {
-    const grad = ctx.createRadialGradient(s.x - r*0.25, s.y - r*0.25, r*0.1, s.x, s.y, r);
-    grad.addColorStop(0, lightenColor(color, 50));
-    grad.addColorStop(0.6, lightenColor(color, 15));
-    grad.addColorStop(1, color);
-    ctx.fillStyle = grad;
-  }
+  // Ground shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(s.x + 1, s.y + r * 0.9, r * 0.7, r * 0.25, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Body rim
-  ctx.strokeStyle = isGhost ? 'rgba(255,100,100,0.5)' : `rgba(${hexToRgb(color)},0.4)`;
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
+  if (isGhost) {
+    // === GHOST AURA (pulsing glow) ===
+    const pulse = 0.85 + Math.sin(t * 2.5) * 0.15;
+    const auraR = r * 2.8 * pulse;
+    const aura = ctx.createRadialGradient(s.x, s.y - r * 0.15, r * 0.2, s.x, s.y, auraR);
+    aura.addColorStop(0, 'rgba(255,70,70,0.18)');
+    aura.addColorStop(0.4, 'rgba(255,50,50,0.07)');
+    aura.addColorStop(1, 'rgba(255,30,30,0)');
+    ctx.fillStyle = aura;
+    ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.fill();
 
-  // Specular highlight
-  ctx.fillStyle = 'rgba(255,255,255,0.2)';
-  ctx.beginPath(); ctx.ellipse(s.x - r*0.2, s.y - r*0.3, r*0.35, r*0.2, -0.5, 0, Math.PI * 2); ctx.fill();
+    // === GHOST BODY (dome top + wavy bottom) ===
+    const bob = Math.sin(t * 3) * r * 0.06;
+    const bodyTop = s.y - r * 1.05 + bob;
+    const bodyBot = s.y + r * 0.95 + bob;
+    const bodyW = r * 1.05;
 
-  // Emoji
-  ctx.font = `${Math.floor(r * 1.05)}px sans-serif`;
+    // Ghost body gradient
+    const gg = ctx.createLinearGradient(s.x, bodyTop, s.x, bodyBot);
+    gg.addColorStop(0, 'rgba(255,220,220,0.95)');
+    gg.addColorStop(0.35, 'rgba(255,120,120,0.88)');
+    gg.addColorStop(0.7, 'rgba(230,60,60,0.82)');
+    gg.addColorStop(1, 'rgba(180,30,30,0.5)');
+    ctx.fillStyle = gg;
+
+    ctx.beginPath();
+    ctx.moveTo(s.x - bodyW, bodyBot);
+    // Left side up
+    ctx.quadraticCurveTo(s.x - bodyW * 1.05, s.y - r * 0.2 + bob, s.x - bodyW * 0.6, bodyTop + r * 0.3);
+    // Dome top
+    ctx.quadraticCurveTo(s.x, bodyTop - r * 0.25, s.x + bodyW * 0.6, bodyTop + r * 0.3);
+    // Right side down
+    ctx.quadraticCurveTo(s.x + bodyW * 1.05, s.y - r * 0.2 + bob, s.x + bodyW, bodyBot);
+    // Wavy bottom (3 bumps)
+    const wavePhase = t * 4;
+    for (let i = 0; i < 3; i++) {
+      const x1 = s.x + bodyW - (i * 2 + 1) * bodyW / 3;
+      const x2 = s.x + bodyW - (i * 2 + 2) * bodyW / 3;
+      const waveY = Math.sin(wavePhase + i * 1.8) * r * 0.12;
+      ctx.quadraticCurveTo(
+        (x1 + x2) / 2, bodyBot + r * 0.22 + waveY,
+        x2, bodyBot
+      );
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Ghost body outline
+    ctx.strokeStyle = 'rgba(255,130,130,0.35)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    // Inner highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath();
+    ctx.ellipse(s.x - r * 0.15, s.y - r * 0.35 + bob, r * 0.3, r * 0.18, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // === GHOST EYES ===
+    const eyeY = s.y - r * 0.15 + bob;
+    const eyeSpacing = r * 0.32;
+    const eyeW = r * 0.22;
+    const eyeH = r * 0.3;
+
+    // Eye whites (glowing)
+    ctx.shadowColor = '#fff';
+    ctx.shadowBlur = r * 0.4;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(s.x - eyeSpacing, eyeY, eyeW, eyeH, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(s.x + eyeSpacing, eyeY, eyeW, eyeH, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Pupils (look toward movement direction)
+    const pdx = (p.dir.x || 0) * r * 0.06;
+    const pdy = (p.dir.y || 0) * r * 0.06;
+    ctx.fillStyle = '#1a0000';
+    ctx.beginPath(); ctx.arc(s.x - eyeSpacing + pdx, eyeY + pdy, r * 0.1, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(s.x + eyeSpacing + pdx, eyeY + pdy, r * 0.1, 0, Math.PI * 2); ctx.fill();
+
+  } else {
+    // === HUMAN CHARACTER ===
+    const isMoving = (p.dir.x !== 0 || p.dir.y !== 0);
+    const walkPhase = isMoving ? frameCount * 0.18 : 0;
+    const legSwing = isMoving ? Math.sin(walkPhase) * r * 0.3 : 0;
+    const armSwing = isMoving ? Math.sin(walkPhase) * r * 0.2 : 0;
+    const bodyBob = isMoving ? Math.abs(Math.sin(walkPhase)) * r * 0.04 : 0;
+
+    // Subtle aura
+    const hAura = ctx.createRadialGradient(s.x, s.y, r * 0.3, s.x, s.y, r * 1.6);
+    hAura.addColorStop(0, `rgba(${hexToRgb(color)},0.06)`);
+    hAura.addColorStop(1, `rgba(${hexToRgb(color)},0)`);
+    ctx.fillStyle = hAura;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 1.6, 0, Math.PI * 2); ctx.fill();
+
+    const bodyY = s.y - bodyBob;
+
+    // === LEGS ===
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = Math.max(2, r * 0.16);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(s.x - r * 0.18, bodyY + r * 0.35);
+    ctx.lineTo(s.x - r * 0.22, bodyY + r * 0.85 + legSwing);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(s.x + r * 0.18, bodyY + r * 0.35);
+    ctx.lineTo(s.x + r * 0.22, bodyY + r * 0.85 - legSwing);
+    ctx.stroke();
+
+    // Shoes
+    ctx.fillStyle = '#333';
+    ctx.beginPath();
+    ctx.ellipse(s.x - r * 0.22, bodyY + r * 0.88 + legSwing, r * 0.12, r * 0.06, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(s.x + r * 0.22, bodyY + r * 0.88 - legSwing, r * 0.12, r * 0.06, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // === BODY / TORSO ===
+    const torsoGrad = ctx.createLinearGradient(s.x, bodyY - r * 0.35, s.x, bodyY + r * 0.4);
+    torsoGrad.addColorStop(0, lightenColor(color, 25));
+    torsoGrad.addColorStop(1, color);
+    ctx.fillStyle = torsoGrad;
+    ctx.beginPath();
+    ctx.moveTo(s.x - r * 0.35, bodyY - r * 0.25);
+    ctx.lineTo(s.x + r * 0.35, bodyY - r * 0.25);
+    ctx.quadraticCurveTo(s.x + r * 0.38, bodyY + r * 0.05, s.x + r * 0.28, bodyY + r * 0.4);
+    ctx.lineTo(s.x - r * 0.28, bodyY + r * 0.4);
+    ctx.quadraticCurveTo(s.x - r * 0.38, bodyY + r * 0.05, s.x - r * 0.35, bodyY - r * 0.25);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = `rgba(${hexToRgb(color)},0.5)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // === ARMS ===
+    ctx.strokeStyle = lightenColor(color, -15);
+    ctx.lineWidth = Math.max(2, r * 0.14);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(s.x - r * 0.38, bodyY - r * 0.15);
+    ctx.lineTo(s.x - r * 0.52, bodyY + r * 0.2 - armSwing);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(s.x + r * 0.38, bodyY - r * 0.15);
+    ctx.lineTo(s.x + r * 0.52, bodyY + r * 0.2 + armSwing);
+    ctx.stroke();
+
+    // Hands
+    ctx.fillStyle = '#f5d0a9';
+    ctx.beginPath(); ctx.arc(s.x - r * 0.52, bodyY + r * 0.22 - armSwing, r * 0.07, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(s.x + r * 0.52, bodyY + r * 0.22 + armSwing, r * 0.07, 0, Math.PI * 2); ctx.fill();
+
+    // === HEAD ===
+    const headR = r * 0.38;
+    const headY = bodyY - r * 0.55;
+
+    // Head circle
+    const headGrad = ctx.createRadialGradient(s.x - headR * 0.2, headY - headR * 0.2, headR * 0.1, s.x, headY, headR);
+    headGrad.addColorStop(0, '#ffe4c4');
+    headGrad.addColorStop(1, '#f0c8a0');
+    ctx.fillStyle = headGrad;
+    ctx.beginPath(); ctx.arc(s.x, headY, headR, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(180,140,100,0.4)';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    // Hair
+    ctx.fillStyle = '#4a3728';
+    ctx.beginPath();
+    ctx.arc(s.x, headY - headR * 0.15, headR * 1.02, Math.PI * 1.15, Math.PI * 1.85);
+    ctx.quadraticCurveTo(s.x, headY - headR * 1.15, s.x + headR * 0.85, headY - headR * 0.3);
+    ctx.closePath();
+    ctx.fill();
+
+    // Eyes
+    const hEyeY = headY + headR * 0.05;
+    const hEyeSpacing = headR * 0.35;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(s.x - hEyeSpacing, hEyeY, headR * 0.16, headR * 0.2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(s.x + hEyeSpacing, hEyeY, headR * 0.16, headR * 0.2, 0, 0, Math.PI * 2); ctx.fill();
+
+    // Pupils
+    const hPdx = (p.dir.x || 0) * headR * 0.08;
+    const hPdy = (p.dir.y || 0) * headR * 0.08;
+    ctx.fillStyle = '#222';
+    ctx.beginPath(); ctx.arc(s.x - hEyeSpacing + hPdx, hEyeY + hPdy, headR * 0.09, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(s.x + hEyeSpacing + hPdx, hEyeY + hPdy, headR * 0.09, 0, Math.PI * 2); ctx.fill();
+
+    // Mouth
+    ctx.strokeStyle = '#a0705a';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.arc(s.x, hEyeY + headR * 0.35, headR * 0.15, 0.1, Math.PI - 0.1);
+    ctx.stroke();
+  }
+
+  // === NAME TAG ===
+  const nameFont = Math.max(10, Math.floor(r * 0.6));
+  ctx.font = `bold ${nameFont}px sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(isGhost ? '👻' : '🏃', s.x, s.y + 1);
-
-  // Name tag with background
-  const nameFont = Math.max(10, Math.floor(r * 0.65));
-  ctx.font = `bold ${nameFont}px sans-serif`;
   const tw = ctx.measureText(p.name).width;
-  const nx = s.x, ny = s.y - r - 10;
-  ctx.fillStyle = 'rgba(0,0,0,0.5)';
-  ctx.beginPath(); ctx.roundRect(nx - tw/2 - 5, ny - nameFont/2 - 2, tw + 10, nameFont + 4, 4); ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  ctx.fillText(p.name, nx, ny);
+  const tagY = s.y - r * 1.35;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.beginPath(); ctx.roundRect(s.x - tw/2 - 5, tagY - nameFont/2 - 2, tw + 10, nameFont + 4, 4); ctx.fill();
+  ctx.fillStyle = isGhost ? '#ff9999' : 'rgba(255,255,255,0.9)';
+  ctx.fillText(p.name, s.x, tagY);
 
-  // Self highlight - animated ring
+  // === SELF HIGHLIGHT (animated ring) ===
   if (p.id === myId) {
     const dashOff = frameCount * 0.8;
     ctx.beginPath(); ctx.arc(s.x, s.y, r + 5, 0, Math.PI * 2);
