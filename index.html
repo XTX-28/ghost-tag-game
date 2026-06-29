@@ -82,6 +82,21 @@ input[type=text]:focus{border-color:#4d96ff;box-shadow:0 0 0 3px rgba(77,150,255
 .result-row:first-child{font-size:15px}
 .result-rank{font-weight:700}
 .result-score{color:#ffd93d;font-weight:700}
+
+/* Skill button */
+#skill-btn{position:fixed;left:170px;bottom:55px;width:58px;height:58px;border-radius:50%;background:linear-gradient(135deg,#4d96ff,#6bcb77);border:3px solid rgba(255,255,255,.25);z-index:30;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;box-shadow:0 4px 15px rgba(77,150,255,.35);transition:transform .15s,opacity .3s;color:#fff;user-select:none;-webkit-user-select:none;touch-action:none}
+#skill-btn:active{transform:scale(.9)}
+#skill-btn.cooldown{background:rgba(80,80,80,.5);border-color:rgba(255,255,255,.08);box-shadow:none;color:rgba(255,255,255,.3)}
+#skill-cd{position:absolute;bottom:-16px;font-size:10px;color:rgba(255,255,255,.5);font-weight:700;width:58px;text-align:center}
+
+/* Effects bar */
+#effects-bar{position:fixed;top:52px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:25;pointer-events:none}
+.effect-icon{padding:4px 10px;border-radius:10px;font-size:11px;font-weight:700;backdrop-filter:blur(6px);animation:effectPop .3s ease;white-space:nowrap}
+@keyframes effectPop{0%{transform:scale(0);opacity:0}100%{transform:scale(1);opacity:1}}
+
+/* Item pickup notification */
+#item-notify{position:fixed;top:80px;left:50%;transform:translateX(-50%);padding:6px 16px;border-radius:12px;font-size:13px;font-weight:700;z-index:26;pointer-events:none;opacity:0;transition:opacity .3s;background:rgba(0,0,0,.6);backdrop-filter:blur(8px)}
+#item-notify.show{opacity:1}
 </style>
 </head>
 <body>
@@ -162,6 +177,9 @@ input[type=text]:focus{border-color:#4d96ff;box-shadow:0 0 0 3px rgba(77,150,255
     <div id="joystick-knob"></div>
   </div>
   <canvas id="minimap"></canvas>
+  <div id="skill-btn" ontouchstart="activateDash(event)" onmousedown="activateDash(event)">💨<span id="skill-cd"></span></div>
+  <div id="effects-bar"></div>
+  <div id="item-notify"></div>
 </div>
 
 <!-- Countdown -->
@@ -282,6 +300,26 @@ const WALLS = [
   {x:490,y:100,w:20,h:20},
   {x:490,y:580,w:20,h:20},
 ];
+
+// ============ ITEMS / POWERUPS ============
+const ITEM_TYPES = [
+  {id:'speed', name:'加速鞋', emoji:'⚡', color:'#4d96ff', duration:5000},
+  {id:'shield', name:'护盾', emoji:'🛡️', color:'#ffd93d', duration:8000},
+  {id:'invisible', name:'隐身衣', emoji:'👁️', color:'#a66cff', duration:4000},
+  {id:'freeze', name:'冰冻弹', emoji:'❄️', color:'#00d2d3', duration:0},
+];
+const MAX_ITEMS_ON_MAP = 3;
+const ITEM_SPAWN_INTERVAL = 8000;
+const ITEM_LIFETIME = 18000;
+
+let mapItems = [];
+let playerEffects = {};
+let lastItemSpawn = 0;
+let dashCooldown = 0;
+let dashTimer = 0;
+const DASH_CD = 12000;
+const DASH_DURATION = 350;
+const DASH_SPEED_MULT = 4.5;
 
 // ============ SCREENS ============
 function showScreen(id) {
@@ -725,6 +763,11 @@ function startSinglePlayer(role) {
   gameTime = SP_TIME;
   connections = [];
   gameRunning = true;
+  mapItems = [];
+  playerEffects = {};
+  lastItemSpawn = Date.now() - ITEM_SPAWN_INTERVAL + 3000;
+  dashCooldown = 0;
+  dashTimer = 0;
 
   // Start game
   showScreen('game-screen');
@@ -763,27 +806,57 @@ function singlePlayerTick() {
   ids.forEach(id => {
     const p = players[id];
     if (!p.alive) return;
-    const speed = p.isGhost ? GHOST_SPEED : PLAYER_SPEED;
-    let nx = p.x + p.dir.x * speed;
-    let ny = p.y + p.dir.y * speed;
-    if (!collidesWall(nx, p.y, PLAYER_R)) p.x = nx;
-    if (!collidesWall(p.x, ny, PLAYER_R)) p.y = ny;
+    // Frozen ghosts don't move
+    if (hasEffect(id, 'frozen')) return;
+    // Dash movement
+    if (id === myId && dashTimer > 0) {
+      const dashSpd = PLAYER_SPEED * DASH_SPEED_MULT;
+      const dnx = p.x + (p._dashDx||0) * dashSpd;
+      const dny = p.y + (p._dashDy||0) * dashSpd;
+      if (!collidesWall(dnx, p.y, PLAYER_R)) p.x = dnx;
+      if (!collidesWall(p.x, dny, PLAYER_R)) p.y = dny;
+      dashTimer -= TICK_RATE;
+      if (dashTimer <= 0) dashTimer = 0;
+    } else {
+      const mult = getSpeedMult(id);
+      const speed = (p.isGhost ? GHOST_SPEED : PLAYER_SPEED) * mult;
+      let nx = p.x + p.dir.x * speed;
+      let ny = p.y + p.dir.y * speed;
+      if (!collidesWall(nx, p.y, PLAYER_R)) p.x = nx;
+      if (!collidesWall(p.x, ny, PLAYER_R)) p.y = ny;
+    }
     p.x = Math.max(PLAYER_R, Math.min(ARENA_W - PLAYER_R, p.x));
     p.y = Math.max(PLAYER_R, Math.min(ARENA_H - PLAYER_R, p.y));
   });
 
-  // Tag detection
+  // Tag detection (with shield/invisible protection)
   const ghosts = ids.filter(id => players[id].isGhost && players[id].alive);
   const runners = ids.filter(id => !players[id].isGhost && players[id].alive);
   ghosts.forEach(gid => {
     runners.forEach(rid => {
       const g = players[gid], r = players[rid];
       if (Math.hypot(g.x - r.x, g.y - r.y) < TAG_DIST) {
-        r.isGhost = true;
-        g.score += 10;
+        if (hasEffect(rid, 'shield')) {
+          playerEffects[rid].shieldEnd = 0;
+          g.score = Math.max(0, g.score - 5);
+          for (let j = 0; j < 6; j++) spawnParticle(r.x, r.y, '#ffd93d', 400, (Math.random()-.5)*3, (Math.random()-.5)*3, 3);
+        } else if (!hasEffect(rid, 'invisible')) {
+          r.isGhost = true;
+          g.score += 10;
+        }
       }
     });
   });
+
+  // Item spawning & expiry
+  const now = Date.now();
+  if (now - lastItemSpawn > ITEM_SPAWN_INTERVAL) { spawnItem(); lastItemSpawn = now; }
+  mapItems = mapItems.filter(item => {
+    if (now - item.spawnTime > ITEM_LIFETIME) { return false; }
+    return true;
+  });
+  // Item pickup
+  ids.forEach(id => checkItemPickup(id));
 
   // Check game end
   const currentRunners = ids.filter(id => !players[id].isGhost && players[id].alive);
@@ -803,6 +876,9 @@ function updateBots() {
   bots.forEach(bot => {
     const p = players[bot.id];
     if (!p || !p.alive) return;
+
+    // Frozen ghosts can't move
+    if (hasEffect(bot.id, 'frozen')) { bot.dir = {x:0,y:0}; return; }
 
     const moved = Math.hypot(p.x - bot.lastX, p.y - bot.lastY);
     if (moved < 0.5) {
@@ -1162,6 +1238,142 @@ function wallAvoidance(x, y, dirX, dirY) {
   return {x: ax, y: ay};
 }
 
+// ============ ITEMS & SKILLS ============
+function spawnItem() {
+  if (mapItems.length >= MAX_ITEMS_ON_MAP) return;
+  const type = ITEM_TYPES[Math.floor(Math.random() * ITEM_TYPES.length)];
+  let x, y, ok = false;
+  for (let t = 0; t < 30; t++) {
+    x = 50 + Math.random() * (ARENA_W - 100);
+    y = 50 + Math.random() * (ARENA_H - 100);
+    if (!collidesWall(x, y, 18)) { ok = true; break; }
+  }
+  if (!ok) return;
+  mapItems.push({x, y, type, spawnTime: Date.now(), id: Math.random().toString(36).slice(2)});
+}
+
+function checkItemPickup(playerId) {
+  const p = players[playerId];
+  if (!p || !p.alive) return;
+  for (let i = mapItems.length - 1; i >= 0; i--) {
+    const item = mapItems[i];
+    if (Math.hypot(p.x - item.x, p.y - item.y) < PLAYER_R + 16) {
+      mapItems.splice(i, 1);
+      applyItemEffect(playerId, item.type);
+      if (playerId === myId) {
+        showItemNotify(item.type);
+        for (let j = 0; j < 8; j++) spawnParticle(item.x, item.y, item.type.color, 500, (Math.random()-.5)*3, (Math.random()-.5)*3, 4);
+      }
+      return;
+    }
+  }
+}
+
+function applyItemEffect(playerId, type) {
+  if (!playerEffects[playerId]) playerEffects[playerId] = {};
+  const eff = playerEffects[playerId];
+  switch (type.id) {
+    case 'speed': eff.speedEnd = Date.now() + type.duration; break;
+    case 'shield': eff.shieldEnd = Date.now() + type.duration; break;
+    case 'invisible': eff.invisibleEnd = Date.now() + type.duration; break;
+    case 'freeze':
+      const me = players[playerId];
+      if (!me) return;
+      Object.values(players).forEach(p => {
+        if (p.isGhost && p.alive && Math.hypot(p.x - me.x, p.y - me.y) < 180) {
+          if (!playerEffects[p.id]) playerEffects[p.id] = {};
+          playerEffects[p.id].frozenEnd = Date.now() + 3000;
+          for (let j = 0; j < 6; j++) spawnParticle(p.x, p.y, '#00d2d3', 600, (Math.random()-.5)*2, (Math.random()-.5)*2, 3);
+        }
+      });
+      break;
+  }
+}
+
+function hasEffect(pid, effName) {
+  const eff = playerEffects[pid];
+  if (!eff) return false;
+  const now = Date.now();
+  switch (effName) {
+    case 'speed': return eff.speedEnd && now < eff.speedEnd;
+    case 'shield': return eff.shieldEnd && now < eff.shieldEnd;
+    case 'invisible': return eff.invisibleEnd && now < eff.invisibleEnd;
+    case 'frozen': return eff.frozenEnd && now < eff.frozenEnd;
+  }
+  return false;
+}
+
+function getSpeedMult(pid) {
+  return hasEffect(pid, 'speed') ? 1.6 : 1.0;
+}
+
+function showItemNotify(type) {
+  const el = document.getElementById('item-notify');
+  el.textContent = type.emoji + ' ' + type.name + '!';
+  el.style.color = type.color;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 1500);
+}
+
+function updateEffectsBar() {
+  const bar = document.getElementById('effects-bar');
+  if (!bar) return;
+  const eff = playerEffects[myId];
+  const now = Date.now();
+  let html = '';
+  if (eff) {
+    if (eff.speedEnd && now < eff.speedEnd) {
+      const s = Math.ceil((eff.speedEnd - now) / 1000);
+      html += `<div class="effect-icon" style="background:rgba(77,150,255,.2);color:#4d96ff;border:1px solid rgba(77,150,255,.3)">⚡ ${s}s</div>`;
+    }
+    if (eff.shieldEnd && now < eff.shieldEnd) {
+      const s = Math.ceil((eff.shieldEnd - now) / 1000);
+      html += `<div class="effect-icon" style="background:rgba(255,217,61,.2);color:#ffd93d;border:1px solid rgba(255,217,61,.3)">🛡️ ${s}s</div>`;
+    }
+    if (eff.invisibleEnd && now < eff.invisibleEnd) {
+      const s = Math.ceil((eff.invisibleEnd - now) / 1000);
+      html += `<div class="effect-icon" style="background:rgba(166,108,255,.2);color:#a66cff;border:1px solid rgba(166,108,255,.3)">👁️ ${s}s</div>`;
+    }
+  }
+  bar.innerHTML = html;
+}
+
+function updateSkillBtn() {
+  const btn = document.getElementById('skill-btn');
+  const cd = document.getElementById('skill-cd');
+  if (!btn || !cd) return;
+  const now = Date.now();
+  if (now < dashCooldown) {
+    btn.classList.add('cooldown');
+    cd.textContent = Math.ceil((dashCooldown - now) / 1000) + 's';
+  } else {
+    btn.classList.remove('cooldown');
+    cd.textContent = '';
+  }
+}
+
+function activateDash(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  if (dashTimer > 0 || Date.now() < dashCooldown || !gameRunning) return;
+  const me = players[myId];
+  if (!me || !me.alive) return;
+  let dx = me.dir.x, dy = me.dir.y;
+  if (dx === 0 && dy === 0) {
+    const a = Math.random() * Math.PI * 2;
+    dx = Math.cos(a); dy = Math.sin(a);
+  }
+  const len = Math.hypot(dx, dy);
+  if (len > 0) { dx /= len; dy /= len; }
+  dashTimer = DASH_DURATION;
+  dashCooldown = Date.now() + DASH_CD;
+  me._dashDx = dx;
+  me._dashDy = dy;
+  for (let i = 0; i < 10; i++) {
+    spawnParticle(me.x, me.y, '#4d96ff', 400, -dx*2+(Math.random()-.5), -dy*2+(Math.random()-.5), 3+Math.random()*2);
+  }
+}
+
 // ============ SINGLE PLAYER END ============
 function finishSinglePlayer() {
   clearInterval(spTickInterval);
@@ -1339,6 +1551,11 @@ function startGame() {
     players[id].dir = {x:0, y:0};
   });
   gameTime = ROUND_TIME;
+  mapItems = [];
+  playerEffects = {};
+  lastItemSpawn = Date.now() - ITEM_SPAWN_INTERVAL + 3000;
+  dashCooldown = 0;
+  dashTimer = 0;
   broadcast({type:'state', players, walls:WALLS, arenaW:ARENA_W, arenaH:ARENA_H});
   broadcast({type:'game_start'});
   beginGame();
@@ -1401,28 +1618,50 @@ function hostTick() {
   ids.forEach(id => {
     const p = players[id];
     if (!p.alive) return;
-    const speed = p.isGhost ? GHOST_SPEED : PLAYER_SPEED;
-    let nx = p.x + p.dir.x * speed;
-    let ny = p.y + p.dir.y * speed;
-    // Wall collision
-    if (!collidesWall(nx, p.y, PLAYER_R)) p.x = nx;
-    if (!collidesWall(p.x, ny, PLAYER_R)) p.y = ny;
-    // Bounds
+    if (hasEffect(id, 'frozen')) return;
+    // Dash movement
+    if (id === myId && dashTimer > 0) {
+      const dashSpd = PLAYER_SPEED * DASH_SPEED_MULT;
+      const dnx = p.x + (p._dashDx||0) * dashSpd;
+      const dny = p.y + (p._dashDy||0) * dashSpd;
+      if (!collidesWall(dnx, p.y, PLAYER_R)) p.x = dnx;
+      if (!collidesWall(p.x, dny, PLAYER_R)) p.y = dny;
+      dashTimer -= TICK_RATE;
+      if (dashTimer <= 0) dashTimer = 0;
+    } else {
+      const mult = getSpeedMult(id);
+      const speed = (p.isGhost ? GHOST_SPEED : PLAYER_SPEED) * mult;
+      let nx = p.x + p.dir.x * speed;
+      let ny = p.y + p.dir.y * speed;
+      if (!collidesWall(nx, p.y, PLAYER_R)) p.x = nx;
+      if (!collidesWall(p.x, ny, PLAYER_R)) p.y = ny;
+    }
     p.x = Math.max(PLAYER_R, Math.min(ARENA_W - PLAYER_R, p.x));
     p.y = Math.max(PLAYER_R, Math.min(ARENA_H - PLAYER_R, p.y));
   });
-  // Tag detection
+  // Tag detection (with shield/invisible)
   const ghosts = ids.filter(id => players[id].isGhost && players[id].alive);
   const runners = ids.filter(id => !players[id].isGhost && players[id].alive);
   ghosts.forEach(gid => {
     runners.forEach(rid => {
       const g = players[gid], r = players[rid];
       if (Math.hypot(g.x - r.x, g.y - r.y) < TAG_DIST) {
-        r.isGhost = true;
-        g.score += 10;
+        if (hasEffect(rid, 'shield')) {
+          playerEffects[rid].shieldEnd = 0;
+          g.score = Math.max(0, g.score - 5);
+        } else if (!hasEffect(rid, 'invisible')) {
+          r.isGhost = true;
+          g.score += 10;
+        }
       }
     });
   });
+  // Item spawning & expiry
+  const now = Date.now();
+  if (now - lastItemSpawn > ITEM_SPAWN_INTERVAL) { spawnItem(); lastItemSpawn = now; }
+  mapItems = mapItems.filter(item => now - item.spawnTime <= ITEM_LIFETIME);
+  // Item pickup
+  ids.forEach(id => checkItemPickup(id));
   // Check game end
   const currentRunners = ids.filter(id => !players[id].isGhost && players[id].alive);
   if (currentRunners.length <= (ids.length > 2 ? 1 : 0) || currentRunners.length === 0) {
@@ -1536,6 +1775,8 @@ function gameLoop() {
   updateParticles();
   render();
   renderMinimap();
+  updateEffectsBar();
+  updateSkillBtn();
   if (gameRunning || document.getElementById('game-screen').classList.contains('active')) {
     requestAnimationFrame(gameLoop);
   }
@@ -1551,6 +1792,14 @@ function spawnParticle(x, y, color, life, vx, vy, size) {
 }
 
 function updateParticles() {
+  // Dash trail particles
+  if (dashTimer > 0 && players[myId]) {
+    const me = players[myId];
+    for (let i = 0; i < 2; i++) {
+      spawnParticle(me.x + (Math.random()-.5)*10, me.y + (Math.random()-.5)*10,
+        'rgba(77,150,255,', 300, (Math.random()-.5)*1.5, (Math.random()-.5)*1.5, 2+Math.random()*3);
+    }
+  }
   // Spawn trail particles for moving players
   const ids = Object.keys(players);
   ids.forEach(id => {
@@ -1652,6 +1901,40 @@ function render() {
     // Border
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.beginPath(); ctx.roundRect(s.x, s.y, rw, rh, rad); ctx.stroke();
+  });
+
+  // Items on map
+  const now = Date.now();
+  mapItems.forEach(item => {
+    const s = toScreen(item.x, item.y);
+    const ir = 14 * canvasScale;
+    const age = now - item.spawnTime;
+    const fadeOut = age > ITEM_LIFETIME - 3000 ? (ITEM_LIFETIME - age) / 3000 : 1;
+    const pulse = 0.8 + Math.sin(now * 0.005 + item.x) * 0.2;
+
+    // Glow
+    ctx.globalAlpha = fadeOut * 0.35 * pulse;
+    const glow = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, ir * 2.5);
+    glow.addColorStop(0, item.type.color);
+    glow.addColorStop(1, 'transparent');
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(s.x, s.y, ir * 2.5, 0, Math.PI * 2); ctx.fill();
+
+    // Circle
+    ctx.globalAlpha = fadeOut * 0.85;
+    ctx.fillStyle = item.type.color;
+    ctx.beginPath(); ctx.arc(s.x, s.y, ir * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Emoji
+    ctx.globalAlpha = fadeOut;
+    ctx.font = `${Math.floor(ir * 1.1)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(item.type.emoji, s.x, s.y);
+    ctx.globalAlpha = 1;
   });
 
   // Arena border with glow
@@ -1903,6 +2186,32 @@ function drawPlayer(p, isGhost) {
     ctx.setLineDash([]);
     ctx.lineDashOffset = 0;
   }
+
+  // === ACTIVE EFFECTS VISUAL ===
+  if (hasEffect(p.id, 'shield')) {
+    ctx.beginPath(); ctx.arc(s.x, s.y, r + 4, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,217,61,0.55)';
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([4, 3]);
+    ctx.lineDashOffset = frameCount * 0.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+  }
+  if (hasEffect(p.id, 'invisible')) {
+    ctx.globalAlpha = 0.35;
+  }
+  if (hasEffect(p.id, 'frozen')) {
+    ctx.fillStyle = 'rgba(0,210,211,0.25)';
+    ctx.beginPath(); ctx.arc(s.x, s.y, r + 6, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#00d2d3';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r + 6, 0, Math.PI * 2); ctx.stroke();
+  }
+  if (hasEffect(p.id, 'speed') && (p.dir.x !== 0 || p.dir.y !== 0)) {
+    spawnParticle(p.x + (Math.random()-.5)*6, p.y + (Math.random()-.5)*6,
+      'rgba(77,150,255,', 250, -p.dir.x*1.5, -p.dir.y*1.5, 2);
+  }
 }
 
 // ============ MINIMAP ============
@@ -1922,6 +2231,14 @@ function renderMinimap() {
   mctx.fillStyle = 'rgba(60,68,80,0.6)';
   WALLS.forEach(w => {
     mctx.fillRect(w.x * sx, w.y * sy, Math.max(2, w.w * sx), Math.max(2, w.h * sy));
+  });
+
+  // Items
+  mapItems.forEach(item => {
+    mctx.fillStyle = item.type.color;
+    mctx.beginPath();
+    mctx.arc(item.x * sx, item.y * sy, 2.5, 0, Math.PI * 2);
+    mctx.fill();
   });
 
   // Players
@@ -1996,6 +2313,11 @@ function updateHUD() {
 // ============ INPUT: KEYBOARD ============
 document.addEventListener('keydown', e => {
   if (!gameRunning) return;
+  if (e.key === ' ' || e.code === 'Space') {
+    e.preventDefault();
+    activateDash({preventDefault:()=>{}, stopPropagation:()=>{}});
+    return;
+  }
   const dirs = {ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},
     w:{x:0,y:-1},s:{x:0,y:1},a:{x:-1,y:0},d:{x:1,y:0},W:{x:0,y:-1},S:{x:0,y:1},A:{x:-1,y:0},D:{x:1,y:0}};
   if (dirs[e.key]) {
