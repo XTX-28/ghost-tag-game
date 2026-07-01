@@ -10,12 +10,12 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#080816;color:#fff;touch-action:none;user-select:none;-webkit-user-select:none}
-.screen{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:10}
+.screen{position:fixed;top:0;right:0;bottom:0;left:0;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:10}
 .screen.active{display:flex}
 
 /* Lobby */
 #lobby{background:#080816;overflow:hidden}
-#lobby-bg{position:absolute;inset:0;z-index:0}
+#lobby-bg{position:absolute;top:0;right:0;bottom:0;left:0;z-index:0}
 #lobby>*:not(#lobby-bg){position:relative;z-index:1}
 .lobby-ornament{position:absolute;border-radius:50%;filter:blur(80px);opacity:.18;animation:floatOrb 12s ease-in-out infinite alternate}
 @keyframes floatOrb{0%{transform:translate(0,0) scale(1)}50%{transform:translate(30px,-40px) scale(1.15)}100%{transform:translate(-20px,30px) scale(.9)}}
@@ -30,7 +30,7 @@ input[type=text]::placeholder{color:rgba(255,255,255,.2);letter-spacing:1px;text
 input[type=text]:focus{border-color:#4d96ff;box-shadow:0 0 0 3px rgba(77,150,255,.15)}
 .btn{padding:14px 24px;border:none;border-radius:16px;font-size:15px;font-weight:700;cursor:pointer;transition:all .25s cubic-bezier(.4,0,.2,1);width:100%;position:relative;overflow:hidden;letter-spacing:.5px}
 .btn:active{transform:scale(.96)}
-.btn::after{content:'';position:absolute;inset:0;background:linear-gradient(105deg,transparent 40%,rgba(255,255,255,.13) 50%,transparent 60%);transform:translateX(-100%);transition:transform .6s}
+.btn::after{content:'';position:absolute;top:0;right:0;bottom:0;left:0;background:linear-gradient(105deg,transparent 40%,rgba(255,255,255,.13) 50%,transparent 60%);transform:translateX(-100%);transition:transform .6s}
 .btn:hover::after{transform:translateX(100%)}
 .btn-primary{background:linear-gradient(135deg,#4d96ff,#6bcb77);color:#fff;box-shadow:0 4px 15px rgba(77,150,255,.25)}
 .btn-secondary{background:rgba(255,255,255,.07);color:rgba(255,255,255,.85);border:1px solid rgba(255,255,255,.1)}
@@ -57,7 +57,7 @@ input[type=text]:focus{border-color:#4d96ff;box-shadow:0 0 0 3px rgba(77,150,255
 #game-canvas{display:block;width:100%;height:100%}
 
 /* Minimap */
-#minimap{position:fixed;bottom:16px;right:16px;width:120px;height:90px;background:rgba(8,8,22,.8);border:1px solid rgba(255,255,255,.1);border-radius:10px;z-index:25;overflow:hidden;backdrop-filter:blur(6px)}
+#minimap{position:fixed;bottom:16px;right:16px;width:120px;height:90px;background:rgba(8,8,22,.8);border:1px solid rgba(255,255,255,.1);border-radius:10px;z-index:25;overflow:hidden;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
 
 /* Joystick */
 #joystick-zone{position:fixed;bottom:20px;left:20px;width:140px;height:140px;z-index:30}
@@ -65,18 +65,18 @@ input[type=text]:focus{border-color:#4d96ff;box-shadow:0 0 0 3px rgba(77,150,255
 #joystick-knob{width:50px;height:50px;border-radius:50%;background:radial-gradient(circle at 40% 35%,rgba(255,255,255,.25),rgba(255,255,255,.08));border:2px solid rgba(255,255,255,.2);position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);transition:none;box-shadow:0 2px 10px rgba(0,0,0,.3)}
 
 /* Countdown */
-#countdown{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:50;background:rgba(0,0,0,.7);backdrop-filter:blur(6px)}
+#countdown{position:fixed;top:0;right:0;bottom:0;left:0;display:none;align-items:center;justify-content:center;z-index:50;background:rgba(0,0,0,.7);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
 #countdown.active{display:flex}
 #countdown-text{font-size:clamp(60px,20vw,120px);font-weight:900;color:#ffd93d;animation:countPop .8s ease;text-shadow:0 0 40px rgba(255,217,61,.4)}
 @keyframes countPop{0%{transform:scale(2.5);opacity:0}50%{transform:scale(1);opacity:1}100%{transform:scale(.92);opacity:.85}}
 
 /* Result */
-#result{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:50;background:rgba(0,0,0,.8);backdrop-filter:blur(12px)}
+#result{position:fixed;top:0;right:0;bottom:0;left:0;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:50;background:rgba(0,0,0,.8);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
 #result.active{display:flex}
 #result-title{font-size:clamp(32px,8vw,48px);font-weight:900;margin-bottom:8px;animation:resultPop .6s ease}
 @keyframes resultPop{0%{transform:scale(0);opacity:0}60%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
 #result-sub{font-size:15px;color:rgba(255,255,255,.5);margin-bottom:24px}
-.result-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:20px;width:min(340px,85vw);margin-bottom:20px;backdrop-filter:blur(10px)}
+.result-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:20px;width:min(340px,85vw);margin-bottom:20px;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
 .result-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:14px}
 .result-row:last-child{border:none}
 .result-row:first-child{font-size:15px}
@@ -91,11 +91,11 @@ input[type=text]:focus{border-color:#4d96ff;box-shadow:0 0 0 3px rgba(77,150,255
 
 /* Effects bar */
 #effects-bar{position:fixed;top:52px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:25;pointer-events:none}
-.effect-icon{padding:4px 10px;border-radius:10px;font-size:11px;font-weight:700;backdrop-filter:blur(6px);animation:effectPop .3s ease;white-space:nowrap}
+.effect-icon{padding:4px 10px;border-radius:10px;font-size:11px;font-weight:700;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:effectPop .3s ease;white-space:nowrap}
 @keyframes effectPop{0%{transform:scale(0);opacity:0}100%{transform:scale(1);opacity:1}}
 
 /* Item pickup notification */
-#item-notify{position:fixed;top:80px;left:50%;transform:translateX(-50%);padding:6px 16px;border-radius:12px;font-size:13px;font-weight:700;z-index:26;pointer-events:none;opacity:0;transition:opacity .3s;background:rgba(0,0,0,.6);backdrop-filter:blur(8px)}
+#item-notify{position:fixed;top:80px;left:50%;transform:translateX(-50%);padding:6px 16px;border-radius:12px;font-size:13px;font-weight:700;z-index:26;pointer-events:none;opacity:0;transition:opacity .3s;background:rgba(0,0,0,.6);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 #item-notify.show{opacity:1}
 </style>
 </head>
